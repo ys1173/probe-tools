@@ -1,0 +1,8 @@
+# Allow-list: the image builds only need the Go module. Everything else (git history, dist/, local databases,
+# env files, certificates, deploy configs) stays out of the build context so it cannot leak into a layer.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+**/*_test.go

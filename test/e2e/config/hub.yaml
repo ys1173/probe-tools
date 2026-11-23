@@ -1,0 +1,20 @@
+data_dir: /data
+probe_listener:
+  address: ":8443"
+  tls_cert_file: /certs/tls.crt
+  tls_key_file: /certs/tls.key
+  insecure_plaintext: false
+  public_url: wss://hub:8443
+mcp:
+  address: ":8080"
+  path: /mcp
+clients:
+  - name: full
+    token_env: HUB_TOKEN_FULL
+    probes: ["*"]
+    tools: ["*"]
+  - name: limited
+    token_env: HUB_TOKEN_LIMITED
+    probes: ["site-a-*"]
+    tools: ["ping", "list_probes"]
+log_level: info

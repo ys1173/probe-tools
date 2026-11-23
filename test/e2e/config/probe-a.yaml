@@ -1,0 +1,12 @@
+hub_url: wss://hub:8443
+enroll_token_env: PROBE_ENROLL_TOKEN
+state_dir: /var/lib/probe
+ca_file: /etc/probe/ca.crt
+insecure_plaintext: false
+targets:
+  mode: open
+listen_ports: "40000-40010"
+limits:
+  max_concurrent: 8
+  per_target_per_minute: 600
+log_level: info

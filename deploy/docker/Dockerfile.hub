@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+#
+# probe-hub image.
+#
+#   docker buildx build -f deploy/docker/Dockerfile.hub --build-arg VERSION=v1.2.3 -t probetools/hub:v1.2.3 .
+#
+# Runtime base: gcr.io/distroless/static (nonroot). The binary is static (CGO_ENABLED=0), so all it needs is CA
+# certificates, tzdata and an /etc/passwd entry; distroless/static has exactly that and nothing else (no shell, no
+# package manager), so the image is the binary plus about 7 MB and a compromised process has no tools to work with.
+# Alpine would add a shell and busybox (useful for a wget healthcheck) at the cost of a bigger attack
+# surface; this project prefers the smaller surface, so the hub has no in-image healthcheck (see compose.yaml).
+
+ARG GO_VERSION=1.26
+ARG DISTROLESS=gcr.io/distroless/static-debian13:nonroot
+
+# The build stage always runs on the builder's own platform and cross-compiles, so a multi-arch build needs no QEMU.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS build
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY cmd/ cmd/
+COPY internal/ internal/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags "-s -w -X probetools/internal/hub.Version=${VERSION}" \
+      -o /out/probe-hub ./cmd/probe-hub
+
+# The data directory is created here because the runtime image has no shell. A named volume mounted on /data is
+# initialised from this directory, so it inherits the 65532 ownership.
+RUN mkdir -p /rootfs/data && chmod 0700 /rootfs/data
+
+FROM ${DISTROLESS}
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="probe-hub" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.description="Hub for the network troubleshooting probes: MCP server and probe listener"
+
+COPY --from=build --chown=65532:65532 /rootfs/ /
+COPY --from=build /out/probe-hub /usr/local/bin/probe-hub
+
+USER 65532:65532
+WORKDIR /data
+# Config is read from HUB_CONFIG (default /etc/probe-hub/hub.yaml). Mount it read-only from the host.
+EXPOSE 8443 8080
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/local/bin/probe-hub"]
+CMD ["serve"]

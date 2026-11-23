@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1
+#
+# probe image.
+#
+#   docker buildx build -f deploy/docker/Dockerfile.probe --build-arg VERSION=v1.2.3 -t probetools/probe:v1.2.3 .
+#
+# Runtime base: gcr.io/distroless/static (nonroot). The binary is static (CGO_ENABLED=0), so the image only needs CA
+# certificates (for tls_check, http_check and the wss link to the hub), tzdata and an /etc/passwd entry, which
+# distroless/static provides without a shell or package manager. A probe is exposed to whatever it is pointed at, so
+# the smaller the image the better.
+#
+# RAW SOCKETS (traceroute, raw ICMP ping, path_mtu)
+# The process runs as uid 65532, not root, and gets CAP_NET_RAW from a file capability on the binary
+# (setcap cap_net_raw+ep). Verified on Docker 29 / BuildKit 0.37: the security.capability xattr survives
+# `COPY --from=build`, and it also works with `no-new-privileges` (docker/runc put the capability in the container's
+# permitted set, so the exec does not gain anything the no_new_privs rule would strip). Run the container with
+#   cap_drop: [ALL]   cap_add: [NET_RAW]
+# and the binary has CAP_NET_RAW; with `cap_drop: [ALL]` alone the kernel refuses to exec it ("operation not
+# permitted"), because the file asks for a capability outside the container's bounding set. That failure is loud on
+# purpose. If you cannot grant NET_RAW, build an image without the setcap line and set the sysctl
+# net.ipv4.ping_group_range so unprivileged ICMP works (ping works, traceroute does not).
+# Caveat: a file capability lives in an xattr, so anything that exports the image as a plain tar/dir without xattrs
+# (or a registry/storage driver that drops them) loses it. docker pull / load / run keep it.
+
+ARG GO_VERSION=1.26
+ARG DISTROLESS=gcr.io/distroless/static-debian13:nonroot
+
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS build
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+WORKDIR /src
+
+# setcap only edits an ELF file's xattr, so it works on a binary built for another architecture.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libcap2-bin \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY cmd/ cmd/
+COPY internal/ internal/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags "-s -w -X probetools/internal/probe.Version=${VERSION}" \
+      -o /out/probe ./cmd/probe \
+ && setcap cap_net_raw+ep /out/probe \
+ && getcap /out/probe
+
+# The state directory is created here because the runtime image has no shell. A named volume mounted on
+# /var/lib/probe is initialised from this directory, so it inherits the 65532 ownership and mode 0700.
+RUN mkdir -p /rootfs/var/lib/probe && chmod 0700 /rootfs/var/lib/probe
+
+FROM ${DISTROLESS}
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="probe" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.description="Network troubleshooting probe: connects out to the hub and runs fixed checks"
+
+COPY --from=build --chown=65532:65532 /rootfs/ /
+COPY --from=build /out/probe /usr/local/bin/probe
+
+USER 65532:65532
+WORKDIR /var/lib/probe
+# Config is read from PROBE_CONFIG (default /etc/probe/probe.yaml). Mount it read-only from the host.
+VOLUME ["/var/lib/probe"]
+ENTRYPOINT ["/usr/local/bin/probe"]
+CMD ["run"]

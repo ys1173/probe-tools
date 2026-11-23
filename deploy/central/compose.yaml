@@ -1,0 +1,65 @@
+# Central site: the probe hub.
+#
+#   cp hub.env.example hub.env      # then put a real token in it (openssl rand -hex 32)
+#   edit hub.yaml                   # public_url, client names, scopes
+#   mkdir -p certs                  # tls.crt + tls.key for the probe listener (see ../../scripts/dev-certs.sh for tests)
+#   docker compose up -d
+#
+# Admin commands run inside the running container and use the same data volume:
+#   docker compose exec hub probe-hub token create ...
+#   docker compose exec hub probe-hub probes list
+#   docker compose exec hub probe-hub check-config
+#
+# The image is built from the repository root. On a host that has no checkout, load or pull the image instead
+# (HUB_IMAGE) and delete the build block.
+name: probe-hub
+
+services:
+  hub:
+    image: ${HUB_IMAGE:-probetools/hub:latest}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.hub
+      args:
+        VERSION: ${VERSION:-dev}
+    restart: unless-stopped
+    # Client tokens (HUB_TOKEN_*) named by token_env in hub.yaml. Compose reads this file itself and passes the
+    # values to the container; keep it mode 0600 and out of version control.
+    env_file: hub.env
+    ports:
+      # Probes connect here from every site, so this is published on all interfaces. Put it behind your firewall
+      # rules for the probe sites only if you can. Let the hub terminate TLS here itself rather than putting a
+      # TLS-terminating reverse proxy in front: behind a proxy all probes share the proxy's address for the
+      # enrolment and failed-authentication limits, so a burst of bad requests can delay new probes'
+      # enrolment (probes with a valid credential always connect).
+      - "8443:8443"
+      # MCP for AI agents. Bound to loopback by default so it is not exposed by accident. To serve agents on other
+      # hosts, either bind to the internal interface address ("10.1.2.3:8080:8080") or put a TLS reverse proxy in
+      # front of it and keep this on 127.0.0.1 (a proxy is fine for MCP: the per-address limits apply to the probe
+      # port above). The MCP endpoint only carries a bearer token, so do not publish it
+      # on a public interface without TLS (mcp.tls_cert_file / mcp.tls_key_file in hub.yaml, or a proxy).
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - hub-data:/data
+      - ./hub.yaml:/etc/probe-hub/hub.yaml:ro
+      # tls.crt and tls.key. The container runs as uid 65532, so the key must be readable by it:
+      #   chown 65532:65532 certs/tls.key && chmod 0400 certs/tls.key
+      - ./certs:/certs:ro
+    # Hardening. The hub needs no capabilities (ports above 1024, no raw sockets) and writes only to /data.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # No healthcheck: the image is distroless (no shell, curl or wget) and the hub has no self-check subcommand.
+    # Monitor GET /healthz on the MCP port from outside instead, e.g. curl -fsS http://127.0.0.1:8080/healthz.
+
+volumes:
+  hub-data:

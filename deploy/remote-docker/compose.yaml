@@ -1,0 +1,81 @@
+# Remote site: a probe in a Docker container.
+#
+#   cp probe.env.example probe.env     # put the enrolment token the hub gave you in it
+#   edit probe.yaml                    # hub_url, targets (mode is required), listen_ports
+#   docker compose up -d
+#
+# The enrolment token is single use. After the first successful start the probe keeps its identity in the
+# probe-state volume and ignores the token; you can then empty PROBE_ENROLL_TOKEN in probe.env. To re-enrol a probe,
+# revoke it on the hub, issue a new token and run `docker compose down -v` to drop the old identity.
+#
+# Check the config without starting the probe:   docker compose run --rm probe check-config
+#
+# The image is built from the repository root. On a site with no checkout, load or pull the image (PROBE_IMAGE)
+# and delete the build block.
+name: probe
+
+services:
+  probe:
+    image: ${PROBE_IMAGE:-probetools/probe:latest}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.probe
+      args:
+        VERSION: ${VERSION:-dev}
+    restart: unless-stopped
+    env_file: probe.env
+
+    # Host networking is the default, and usually the right choice for a network probe:
+    #  + the checks see the site's real interfaces, routes, DNS resolvers and source addresses, not a Docker NAT, so
+    #    a traceroute or path_test shows the path your servers actually take;
+    #  + the ports in listen_ports (path_test listeners) are reachable on the host's address without `ports:`;
+    #  - the container shares the host's network namespace: the probe can reach anything the host can, and the host
+    #    firewall, not Docker, is what restricts it. targets.mode / allow_cidrs in probe.yaml is the real guard, so
+    #    keep mode: closed unless this site is meant to be open.
+    #  - on Linux only; Docker Desktop (macOS, Windows) host networking is not the real host network.
+    #  - `sysctls: net.ipv4.ping_group_range` is rejected with host networking. The capability below makes that
+    #    sysctl unnecessary, but if you drop NET_RAW, set it on the host instead:
+    #      sysctl -w net.ipv4.ping_group_range="0 2147483647"
+    network_mode: host
+    #
+    # Bridge-mode alternative (isolated network namespace; the probe then sees the container's address behind NAT,
+    # and path_test needs the listen_ports published). Replace network_mode with:
+    #   ports:
+    #     - "40000-40100:40000-40100/tcp"
+    #     - "40000-40100:40000-40100/udp"
+    #   sysctls:
+    #     net.ipv4.ping_group_range: "0 2147483647"   # unprivileged ICMP fallback; ping only, not traceroute
+    # (Docker's default range already allows this on recent versions; setting it makes it explicit.)
+
+    volumes:
+      # Enrolment identity (identity.json, mode 0600). Losing it means re-enrolling the probe.
+      - probe-state:/var/lib/probe
+      - ./probe.yaml:/etc/probe/probe.yaml:ro
+      # When the hub uses a private CA (see scripts/dev-certs.sh), mount its certificate and set
+      # ca_file: /etc/probe/ca.crt in probe.yaml:
+      # - ./ca.crt:/etc/probe/ca.crt:ro
+
+    # Raw sockets for traceroute and raw ICMP. The binary carries a file capability (setcap cap_net_raw+ep, see
+    # Dockerfile.probe), so the non-root process (uid 65532) gets CAP_NET_RAW only when the container's bounding set
+    # contains it. Both lines are required: with cap_drop ALL and no cap_add the probe fails to exec.
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    # no-new-privileges is kept: tested with this exact setup (cap_drop ALL, cap_add NET_RAW, uid 65532, file
+    # capability) and the process still holds CAP_NET_RAW, because Docker places the added capability in the
+    # container's permitted set and no_new_privs only stops a process gaining capabilities it did not have.
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # No healthcheck: the probe only makes outbound connections and the image has no shell or curl. Watch it from the
+    # hub (`probe-hub probes list`) or the container's restart count.
+
+volumes:
+  probe-state:

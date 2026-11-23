@@ -1,0 +1,51 @@
+[Unit]
+Description=Network troubleshooting probe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=probe
+Group=probe
+# /etc/probe/probe.yaml (0640 root:probe) is read by the probe; /etc/probe/probe.env (0600 root) is read by systemd
+# and only supplies PROBE_ENROLL_TOKEN for the first start, so it is optional once the probe has enrolled.
+EnvironmentFile=-/etc/probe/probe.env
+ExecStart=/usr/local/bin/probe run --config /etc/probe/probe.yaml
+Restart=always
+RestartSec=5
+
+# /var/lib/probe (mode 0700, owned by probe): the saved identity. /etc/probe: read-only config.
+StateDirectory=probe
+StateDirectoryMode=0700
+ConfigurationDirectory=probe
+ConfigurationDirectoryMode=0750
+UMask=0077
+
+# Raw sockets for traceroute and raw ICMP are the only privilege the probe needs.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+
+# Sandbox. The probe talks over IP, resolves names (netlink for interface/route lookups) and logs to stdout.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Runs the Go toolchain in a container, so building and testing need only Docker.
+# Usage: scripts/go test ./...     scripts/go vet ./internal/policy/...
+# Set GO_PRIVILEGED=1 to give the container NET_RAW and NET_ADMIN, for tests that send raw ICMP.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+image="${GO_IMAGE:-golang:1.26}"
+
+args=(--rm -i
+  -v "$root:/src" -w /src
+  -v probe-gomod:/go/pkg/mod
+  -v probe-gobuild:/root/.cache/go-build
+  -e CGO_ENABLED=0
+  -e GOFLAGS="${GOFLAGS:-}"
+  -e GOOS -e GOARCH)
+
+if [[ "${GO_PRIVILEGED:-0}" == "1" ]]; then
+  args+=(--cap-add NET_RAW --cap-add NET_ADMIN --sysctl "net.ipv4.ping_group_range=0 2147483647")
+fi
+if [[ -t 0 ]]; then
+  args+=(-t)
+fi
+
+exec docker run "${args[@]}" "$image" go "$@"

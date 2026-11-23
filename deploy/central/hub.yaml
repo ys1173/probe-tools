@@ -1,0 +1,37 @@
+# Example hub configuration, mounted at /etc/probe-hub/hub.yaml inside the container.
+# Paths here are paths inside the container; compose.yaml maps ./certs to /certs and the hub-data volume to /data.
+
+# SQLite database (probes, enrolment tokens). Audit lines go to stdout. Backed by the hub-data volume.
+data_dir: /data
+
+# Where probes connect (WebSocket, opened by the probe). Probes always connect out to this address.
+probe_listener:
+  address: ":8443"
+  tls_cert_file: /certs/tls.crt
+  tls_key_file: /certs/tls.key
+  # Set true only when a reverse proxy in front of the hub terminates TLS and you trust the network between them.
+  # Prefer letting the hub terminate TLS itself (the cert and key above). Behind a proxy every probe shares the
+  # proxy's address for the enrolment and failed-authentication limits, so a burst of bad requests can delay new
+  # probes' enrolment (probes with a valid credential always connect).
+  insecure_plaintext: false
+  # The URL probes use to reach this listener, as written in each probe's hub_url.
+  public_url: wss://hub.example.com:8443
+
+# MCP endpoint for AI agents (HTTP, bearer token). Plain HTTP by default: compose binds it to 127.0.0.1.
+# For TLS set both files, or terminate TLS in a reverse proxy. (A proxy here is fine: the per-address limits above
+# apply to the probe listener, not to MCP.)
+mcp:
+  address: ":8080"
+  path: /mcp
+  tls_cert_file: ""
+  tls_key_file: ""
+
+# Agent clients. Each token is read from the environment variable named in token_env (see hub.env.example), never
+# from this file. probes and tools narrow what the client may use; "*" means all.
+clients:
+  - name: agents
+    token_env: HUB_TOKEN_AGENTS
+    probes: ["*"]
+    tools: ["*"]
+
+log_level: info

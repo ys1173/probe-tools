@@ -1,0 +1,37 @@
+# Example probe configuration for a native install: installed as /etc/probe/probe.yaml (0640 root:probe).
+
+# Where the hub's probe listener is (the public_url in the hub's hub.yaml). Probes only ever connect out to it.
+hub_url: wss://hub.example.com:8443
+
+# Name of the environment variable that holds the single-use enrolment token (see /etc/probe/probe.env).
+enroll_token_env: PROBE_ENROLL_TOKEN
+
+# Identity is saved here (systemd StateDirectory=probe creates it, mode 0700, owned by the probe user).
+state_dir: /var/lib/probe
+
+# PEM CA certificate to trust for the hub's TLS certificate, when the hub uses a private CA. Empty uses the system
+# roots. Put the file somewhere the probe user can read, e.g. /etc/probe/ca.crt (chgrp probe, mode 0640).
+ca_file: ""
+
+# Plain ws:// to the hub. For local testing only.
+insecure_plaintext: false
+
+# What this probe is allowed to reach. mode is REQUIRED: the probe refuses to start without it.
+#   closed: only the allow_cidrs / allow_hosts below   open: anything except deny_cidrs and the always-refused ranges (loopback, link-local/metadata, multicast, this probe's own addresses)
+targets:
+  mode: closed
+  allow_cidrs:
+    - 10.0.0.0/8
+  allow_hosts:
+    - "*.corp.example"
+  deny_cidrs: []
+
+# Ports this probe may open for path_test listeners. They are opened on this host, so
+# allow them in the host firewall.
+listen_ports: "40000-40100"
+
+limits:
+  max_concurrent: 4
+  per_target_per_minute: 30
+
+log_level: info
