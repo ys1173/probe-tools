@@ -504,3 +504,7 @@ Options: `--keep` (leave the stack up), `--reuse --keep` (run against that stack
   platform.
 - **Optional decision-model screen at the hub (proposed, not agreed)** for commands outside the templates. It can only
   refuse a command. It can never be the only approval.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
