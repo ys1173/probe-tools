@@ -1,0 +1,46 @@
+# MikroTik RouterOS (v6 and v7): print on interface, address, routing, neighbour and system menus, and monitor ... once.
+# The floor already refuses file=, append, follow, follow-only, follow-strict, interval=, on-event=, do=,
+# show-sensitive (and any abbreviation of them), monitor without once, and slash-joined paths (/ip/route/print).
+# Left out on purpose: /export, /file, /user, /log, /snmp, /radius, /certificate, /ip ipsec, /ppp secret,
+# /interface vrrp (password property), /interface wireguard and wireless (keys), /routing bgp connection and v6
+# /routing bgp peer (tcp-md5-key), /routing ospf interface-template (auth-key), /system ntp key, /tool (torch,
+# sniffer, bandwidth-test, fetch), /ip dhcp-server lease (client data).
+# Placeholders: <ROSOPT> is up to three of detail, terse, brief, count-only, without-paging, value-list, show-ids,
+# as-value; <ROSWHERE> is an optional single where condition (name=, interface=, address=, dst-address=, gateway=,
+# mac-address=, vrf=, routing-table=, network= with a plain value; dst-address in <prefix>; or a flag such as dynamic).
+# Other placeholders (<NIF>, ...) are defined in builtin.go.
+# M = RouterOS manual, help.mikrotik.com/docs/spaces/ROS/pages/<id>
+groups:
+  - source: M 47579229 Scripting (print parameters, where expressions), 328134 Command Line Interface;
+      M 139526175 Interface stats and monitor-traffic (/interface print stats, stats-detail); M 8323191 Ethernet;
+      M 328068 Bridging and Switching (bridge, bridge port, bridge host, bridge vlan, bridge monitor); M 88014957
+      VLAN; M 8323193 Bonding
+    allow:
+      - '^/interface print(?: (?:stats|stats-detail))?<ROSOPT><ROSWHERE>$'
+      - '^/interface ethernet print(?: (?:stats|stats-detail))?<ROSOPT><ROSWHERE>$'
+      - '^/interface (?:bridge|bridge port|bridge host|bridge vlan|vlan|bonding) print<ROSOPT><ROSWHERE>$'
+
+  - source: M 283574370 Scripting Tips and Tricks (monitor commands with once; monitor-traffic ether1 once);
+      M 8323191 Ethernet (/interface ethernet monitor); M 328068 Bridging and Switching (/interface bridge monitor);
+      M 8323193 Bonding (/interface bonding monitor)
+    allow:
+      - '^/interface (?:ethernet|bridge|bonding) monitor <NIF> once$'
+      - '^/interface monitor-traffic <NIF> once$'
+
+  - source: M 328247 IP Addressing (/ip address, /ipv6 address); M 328084 IP Routing (/ip route, /routing route);
+      M 24805517 Neighbor discovery (/ip neighbor); ARP and IPv6 Neighbor Discovery (40992815) pages (/ip arp, /ipv6
+      neighbor)
+    allow:
+      - '^/ip (?:address|route|arp|neighbor) print<ROSOPT><ROSWHERE>$'
+      - '^/ipv6 (?:address|route|neighbor) print<ROSOPT><ROSWHERE>$'
+      - '^/routing route print<ROSOPT><ROSWHERE>$'
+
+  - source: M 331612216 routing ospf (/routing ospf neighbor); M 328220 BGP (/routing bgp session, v7)
+    allow:
+      - '^/routing ospf neighbor print<ROSOPT><ROSWHERE>$'
+      - '^/routing bgp session print<ROSOPT><ROSWHERE>$'
+
+  - source: M 40992875 Resource (/system resource, /system resource cpu); M 25690117 Health; M 40992878 RouterBOARD;
+      Identity; M 40992866 Clock; Packages; M 40992869 NTP (/system ntp client)
+    allow:
+      - '^/system (?:resource|resource cpu|health|routerboard|identity|clock|package|ntp client) print<ROSOPT>$'

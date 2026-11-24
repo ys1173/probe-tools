@@ -11,8 +11,13 @@ import (
 	"probetools/internal/protocol"
 )
 
+// allowsTool reports whether the client may call a tool. "*" covers every tool except the device tools, which log in
+// to network equipment and so must be named: a client written before they existed does not gain them by upgrade.
 func (c *clientState) allowsTool(name string) bool {
-	return slices.Contains(c.Tools, "*") || slices.Contains(c.Tools, name)
+	if slices.Contains(c.Tools, name) {
+		return true
+	}
+	return slices.Contains(c.Tools, "*") && !slices.Contains(protocol.DeviceChecks, name)
 }
 
 // allowsProbe reports whether the client's probe patterns cover p. An empty list allows nothing.

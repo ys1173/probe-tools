@@ -12,6 +12,9 @@
 #   --uninstall     stop and remove the service and the binary; keeps /etc/probe and /var/lib/probe
 #   --purge         with --uninstall: also delete /etc/probe, /var/lib/probe and the probe user
 #
+# Device commands over SSH (ssh.enabled in probe.yaml) are managed as the service user, which owns the store in
+# /var/lib/probe/ssh and can read /etc/probe/probe.yaml (root:probe 0640):  sudo -u probe probe ssh ...
+#
 # The enrolment token (issued on the hub, single use) is taken from PROBE_ENROLL_TOKEN in the environment, or asked
 # for on a terminal. It is stored in /etc/probe/probe.env (0600, root). Re-running this script is safe: it replaces
 # the binary and unit, and leaves an existing /etc/probe/probe.yaml alone.
@@ -197,6 +200,10 @@ token_note() {
     log "the probe has enrolled ($STATE_DIR/identity.json exists); the enrolment token is no longer needed and you may remove the PROBE_ENROLL_TOKEN line from $ENV_FILE"
   fi
 }
+
+if grep -Eq '^[[:space:]]*enabled:[[:space:]]*true' "$CONF_FILE"; then
+  log "SSH device commands are on: manage profiles and host keys as the service user: sudo -u $SVC_USER $BIN_DST ssh help"
+fi
 
 if [[ "$start" -eq 0 ]]; then
   log "not starting (--no-start). Start it with: systemctl start $SVC"

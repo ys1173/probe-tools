@@ -14,7 +14,10 @@ ExecStart=/usr/local/bin/probe run --config /etc/probe/probe.yaml
 Restart=always
 RestartSec=5
 
-# /var/lib/probe (mode 0700, owned by probe): the saved identity. /etc/probe: read-only config.
+# /var/lib/probe (mode 0700, owned by probe): the saved identity, and with ssh.enabled the SSH store in ssh/ (profiles,
+# secrets, keys, known_hosts), which the probe also writes when it records a device's host key on first use. Manage it
+# as the same user: sudo -u probe probe ssh ... (run as root, probe ssh refuses a state directory owned by probe).
+# /etc/probe: read-only config. Device SSH needs nothing more: it is outbound TCP like every other check.
 StateDirectory=probe
 StateDirectoryMode=0700
 ConfigurationDirectory=probe

@@ -36,6 +36,9 @@ type Config struct {
 	AllowCIDRs []string `yaml:"allow_cidrs"`
 	AllowHosts []string `yaml:"allow_hosts"` // exact names, or "*.example.com" for any name below example.com
 	DenyCIDRs  []string `yaml:"deny_cidrs"`
+	// DenyHosts is the name half of the no-touch list: names, or "*.example.com", that no check may reach by that name.
+	// It matches only requests made by name; list the addresses in deny_cidrs to refuse them however they are asked for.
+	DenyHosts []string `yaml:"deny_hosts"`
 }
 
 // alwaysDenied are refused in every mode: the probe's own host, link-local addresses where cloud metadata services
@@ -84,6 +87,7 @@ type Policy struct {
 	mode       string
 	allow      []netip.Prefix
 	allowHosts []string
+	denyHosts  []string
 	deny       []netip.Prefix
 	summary    protocol.PolicySummary
 
@@ -127,18 +131,17 @@ func New(cfg Config) (*Policy, error) {
 	if p.deny, err = parsePrefixes(cfg.DenyCIDRs); err != nil {
 		return nil, fmt.Errorf("targets.deny_cidrs: %w", err)
 	}
-	for _, h := range cfg.AllowHosts {
-		h = normalizeName(h)
-		rest := strings.TrimPrefix(h, "*.")
-		if rest == "" || strings.ContainsAny(rest, "*/ ") {
-			return nil, fmt.Errorf("targets.allow_hosts: %q must be a name or *.name", h)
-		}
-		p.allowHosts = append(p.allowHosts, h)
+	if p.allowHosts, err = parseHostPatterns(cfg.AllowHosts); err != nil {
+		return nil, fmt.Errorf("targets.allow_hosts: %w", err)
+	}
+	if p.denyHosts, err = parseHostPatterns(cfg.DenyHosts); err != nil {
+		return nil, fmt.Errorf("targets.deny_hosts: %w", err)
 	}
 	if p.mode == ModeClosed && len(p.allow) == 0 && len(p.allowHosts) == 0 {
 		return nil, errors.New("targets.mode is closed but allow_cidrs and allow_hosts are both empty, so nothing could be probed")
 	}
-	p.summary = protocol.PolicySummary{Mode: p.mode, AllowCIDRs: cfg.AllowCIDRs, AllowHosts: p.allowHosts, DenyCIDRs: cfg.DenyCIDRs}
+	p.summary = protocol.PolicySummary{Mode: p.mode, AllowCIDRs: cfg.AllowCIDRs, AllowHosts: p.allowHosts, DenyCIDRs: cfg.DenyCIDRs,
+		DenyHosts: p.denyHosts}
 	p.SelfAddrs = interfacePrefixes
 	return p, nil
 }
@@ -152,6 +155,9 @@ func (p *Policy) Allowed(host string, addr netip.Addr) *protocol.Error {
 	addr = addr.Unmap().WithZone("")
 	if !addr.IsValid() {
 		return protocol.Errorf(protocol.CodeDenied, "not a valid address")
+	}
+	if host != "" && hostMatches(p.denyHosts, host) {
+		return protocol.Errorf(protocol.CodeDenied, "%s is in this probe's deny_hosts", normalizeName(host))
 	}
 	self, bcast, err := p.selfInfo()
 	if err != nil {
@@ -264,7 +270,7 @@ func (p *Policy) Resolve(ctx context.Context, target, family string) ([]netip.Ad
 			}
 			continue
 		}
-		candidates = append(candidates, a.Unmap())
+		candidates = append(candidates, a.Unmap().WithZone(""))
 	}
 	var allowed []netip.Addr
 	for _, a := range candidates {
@@ -426,7 +432,16 @@ func (p *Policy) clock() time.Time {
 
 func (p *Policy) lookup(ctx context.Context, target, family string) (string, []netip.Addr, *protocol.Error) {
 	target = strings.TrimSpace(target)
+	// A zone ("fe80::1%eth0") is never accepted: zones only matter for link-local addresses, which are always refused,
+	// and a zone carries arbitrary text that would otherwise travel with the address into host:port strings, logs and
+	// known_hosts entries.
+	if strings.Contains(target, "%") {
+		return "", nil, protocol.Errorf(protocol.CodeInvalidParams, "an address must not have a zone (%%...)")
+	}
 	if a, err := netip.ParseAddr(strings.Trim(target, "[]")); err == nil {
+		if a.Zone() != "" {
+			return "", nil, protocol.Errorf(protocol.CodeInvalidParams, "an address must not have a zone (%%...)")
+		}
 		a = a.Unmap()
 		if !familyMatches(a, family) {
 			return "", nil, protocol.Errorf(protocol.CodeInvalidParams, "%s is not an IPv%s address", a, family)
@@ -448,7 +463,12 @@ func (p *Policy) lookup(ctx context.Context, target, family string) (string, []n
 	if len(addrs) == 0 {
 		return host, nil, protocol.Errorf(protocol.CodeUnresolved, "%s has no IPv%s address", host, family)
 	}
-	return host, addrs, nil
+	// A resolver may hand back a zone with a link-local address; no address leaves the policy with one.
+	out := make([]netip.Addr, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, a.WithZone(""))
+	}
+	return host, out, nil
 }
 
 // DialContext dials network ("tcp", "tcp4", "tcp6", "udp", "udp4", "udp6") to address ("host:port") through the policy:
@@ -499,9 +519,25 @@ func IsDenied(err error) bool {
 	return errors.As(err, &pe) && pe.Code == protocol.CodeDenied
 }
 
-func (p *Policy) hostAllowed(host string) bool {
+func (p *Policy) hostAllowed(host string) bool { return hostMatches(p.allowHosts, host) }
+
+// parseHostPatterns normalises name patterns: exact names, or "*.name" for any name below name.
+func parseHostPatterns(list []string) ([]string, error) {
+	var out []string
+	for _, h := range list {
+		h = normalizeName(h)
+		rest := strings.TrimPrefix(h, "*.")
+		if rest == "" || strings.ContainsAny(rest, "*/ ") {
+			return nil, fmt.Errorf("%q must be a name or *.name", h)
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+func hostMatches(patterns []string, host string) bool {
 	host = normalizeName(host)
-	for _, h := range p.allowHosts {
+	for _, h := range patterns {
 		if suffix, ok := strings.CutPrefix(h, "*."); ok {
 			if strings.HasSuffix(host, "."+suffix) {
 				return true

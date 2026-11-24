@@ -1,0 +1,50 @@
+# Fortinet FortiOS: system, interface, routing and hardware status only, with get, plus a few diagnose commands that
+# the docs describe as display-only and that return once.
+# Left out on purpose: show and show full-configuration (configuration), get on configuration objects (get system
+# admin, get system interface without physical, ...), execute, every other diagnose (debug, sniffer, test, sys top,
+# sys mpstat, sys session filter and clear, sys kill, netlink aggregate ... clear), get system performance top
+# (streams), get hardware memory and diagnose sys ntp status (not on docs.fortinet.com).
+# The diagnose patterns below are repeated in the floor (fortiOSDiagnose in floor.go; a test keeps the two equal): no
+# local file can add a diagnose command, because FortiOS keeps display and action side by side under diagnose.
+# Placeholders (<NIF>, <V4>, ...) are defined in builtin.go.
+# FCS = FortiOS 7.6.0 CLI troubleshooting cheat sheet (docs.fortinet.com/document/fortigate/7.6.0/cli-troubleshooting-cheat-sheet)
+# CLI = FortiOS CLI Reference (docs.fortinet.com/document/fortigate/<release>/cli-reference/...)
+groups:
+  - source: FCS (get system status, get system performance status, get sys interface physical, get system arp, get
+      system ha status); CLI 6.0.5 66848 (get system session status)
+    allow:
+      - '^get system status$'
+      - '^get system performance status$'
+      - '^get system interface physical$'
+      - '^get system arp$'
+      - '^get system ha status$'
+      - '^get system session status$'
+
+  - source: CLI 6.0.0 372042 (get router info routing-table); CLI 6.0.5 548630 (get router info6 routing-table); CLI
+      6.0.5 67947 (get router info bgp); FCS (get router info ospf); CLI 6.0.6 881192 (get router info vrrp)
+    allow:
+      - '^get router info routing-table (?:all|bgp|connected|database|ospf|rip|static|details(?: <V4>(?:/[0-9]{1,2}| <V4>)?)?)$'
+      - '^get router info6 routing-table(?: <V6>| bgp| connected| database| ospf| rip| static)?$'
+      - '^get router info bgp summary$'
+      - '^get router info bgp neighbors(?: <V4>(?: advertised-routes| received-routes| routes)?)?$'
+      - '^get router info ospf (?:neighbor(?: all)?|interface|status)$'
+      - '^get router info6 ospf (?:neighbor|interface|status)$'
+      - '^get router info vrrp$'
+
+  - source: CLI 6.0.0 915371 (get hardware status), 164306 (get hardware nic), 680925 (get hardware cpu)
+    allow:
+      - '^get hardware (?:status|cpu)$'
+      - '^get hardware nic <NIF>$'
+
+  - source: FCS (diagnose sys session stat, diagnose ip arp list, diagnose ip route list, diagnose system ha status);
+      CLI 7.6.6 473204947 (diagnose hardware deviceinfo nic, diagnose hardware sysinfo memory and conserve); CLI 7.4.7
+      152576096 (diagnose netlink aggregate list, name <name> [show])
+    allow:
+      - '^diagnose sys session stat$'
+      - '^diagnose hardware deviceinfo nic <NIF>$'
+      - '^diagnose ip arp list$'
+      - '^diagnose ip route list$'
+      - '^diagnose (?:sys|system) ha status$'
+      - '^diagnose netlink aggregate list$'
+      - '^diagnose netlink aggregate name <NIF>(?: show)?$'
+      - '^diagnose hardware sysinfo (?:memory|conserve)$'

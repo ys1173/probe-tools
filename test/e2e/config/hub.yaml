@@ -17,4 +17,9 @@ clients:
     token_env: HUB_TOKEN_LIMITED
     probes: ["site-a-*"]
     tools: ["ping", "list_probes"]
+  # Device tools are not covered by "*": netops names them, full (above) does not get them.
+  - name: netops
+    token_env: HUB_TOKEN_NETOPS
+    probes: ["*"]
+    tools: ["*", "device_show", "device_commands"]
 log_level: info

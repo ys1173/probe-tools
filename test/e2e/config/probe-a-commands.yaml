@@ -1,0 +1,7 @@
+# probe-a's local changes to the built-in device command lists (ssh.commands_file).
+platforms:
+  ios:
+    allow:
+      - '^show e2e-local$'
+    deny:
+      - '^show interfaces counters.*$'

@@ -260,7 +260,7 @@ func listenFailedSummary(to string, e *protocol.Error) string {
 	var why string
 	switch e.Code {
 	case protocol.CodeUnavailable:
-		why = "it cannot listen (no listen_ports configured, or the check is not available)"
+		why = "it cannot listen: " + e.Message
 	case protocol.CodeDenied:
 		why = "its policy does not allow that port; pick one within its listen_ports"
 	case protocol.CodeBusy:

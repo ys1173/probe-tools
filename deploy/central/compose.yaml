@@ -59,7 +59,8 @@ services:
         max-size: "10m"
         max-file: "5"
     # No healthcheck: the image is distroless (no shell, curl or wget) and the hub has no self-check subcommand.
-    # Monitor GET /healthz on the MCP port from outside instead, e.g. curl -fsS http://127.0.0.1:8080/healthz.
+    # Monitor GET /healthz from outside instead: curl -fsS http://127.0.0.1:8080/healthz while MCP is on loopback, or
+    # https://<hub name>:8080/healthz once MCP is re-bound with TLS (docs/deploy.md); 8443 serves /healthz too.
 
 volumes:
   hub-data:

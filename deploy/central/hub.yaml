@@ -27,7 +27,8 @@ mcp:
   tls_key_file: ""
 
 # Agent clients. Each token is read from the environment variable named in token_env (see hub.env.example), never
-# from this file. probes and tools narrow what the client may use; "*" means all.
+# from this file. probes and tools narrow what the client may use; "*" means all, except the device tools (device_show,
+# device_commands), which a client gets only by naming them, e.g. tools: ["*", "device_show", "device_commands"].
 clients:
   - name: agents
     token_env: HUB_TOKEN_AGENTS

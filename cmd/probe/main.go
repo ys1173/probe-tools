@@ -3,6 +3,7 @@
 //
 //	probe [run] [--config FILE]       connect to the hub and serve jobs (the default)
 //	probe check-config [--config FILE] validate the configuration and show the policy
+//	probe ssh ... [--config FILE]       manage this probe's SSH profiles, jump hosts and host keys (see probe ssh help)
 //	probe version
 package main
 
@@ -16,15 +17,19 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"probetools/internal/check"
 	"probetools/internal/checks/app"
+	"probetools/internal/checks/devssh"
 	"probetools/internal/checks/diagnose"
 	"probetools/internal/checks/icmp"
 	"probetools/internal/checks/info"
 	"probetools/internal/checks/pathtest"
+	"probetools/internal/devcmd"
 	"probetools/internal/policy"
 	"probetools/internal/probe"
+	"probetools/internal/sshcfg"
 )
 
 func main() {
@@ -41,6 +46,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, probe.Version)
 		return 0
 	case "run", "check-config":
+	case "ssh":
+		return newCLI(os.Stdin, stdout, stderr).run(args)
 	case "help":
 		usage(stdout)
 		return 0
@@ -71,6 +78,15 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	}
 	if cmd == "check-config" {
 		printSummary(stdout, path, cfg)
+		// With SSH off the probe never loads ssh.commands_file, so Validate does not either; check-config still
+		// reports a file that would not load, so it does not surprise the operator when SSH is turned on.
+		if !cfg.SSH.Enabled && cfg.SSH.CommandsFile != "" {
+			if _, err := devcmd.Load(cfg.SSH.CommandsFile); err != nil {
+				fmt.Fprintf(stdout, "ssh.commands_file %s is not used (ssh.enabled is false), and it does not load:\n%v\n", cfg.SSH.CommandsFile, err)
+				return 1
+			}
+			fmt.Fprintf(stdout, "ssh.commands_file %s loads, but is not used while ssh.enabled is false\n", cfg.SSH.CommandsFile)
+		}
 		return 0
 	}
 
@@ -81,6 +97,22 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	icmp.Register(reg)
 	info.Register(reg)
 	pathtest.Register(reg)
+	if cfg.SSH.Enabled {
+		cat, err := devcmd.Load(cfg.SSH.CommandsFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "ssh.commands_file could not be loaded, so the probe will not start:\n%v\n", err)
+			return 1
+		}
+		devssh.Register(reg, devssh.Config{
+			Store:          sshcfg.New(cfg.StateDir),
+			Commands:       cat,
+			MaxOutputBytes: cfg.SSH.MaxOutputBytes,
+			ConnectTimeout: time.Duration(cfg.SSH.ConnectTimeoutMS) * time.Millisecond,
+			Logger:         logger,
+
+			AuthFailureCooldown: cfg.SSH.AuthFailureCooldown(),
+		})
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -99,7 +131,8 @@ func printSummary(w io.Writer, path string, cfg probe.Config) {
 	sum := cfg.Targets
 	if pol, err := policy.New(cfg.Targets); err == nil {
 		s := pol.Summary()
-		sum = policy.Config{Mode: s.Mode, AllowCIDRs: s.AllowCIDRs, AllowHosts: s.AllowHosts, DenyCIDRs: s.DenyCIDRs}
+		sum = policy.Config{Mode: s.Mode, AllowCIDRs: s.AllowCIDRs, AllowHosts: s.AllowHosts, DenyCIDRs: s.DenyCIDRs,
+			DenyHosts: s.DenyHosts}
 	}
 	fmt.Fprintf(w, "policy mode:   %s\n", sum.Mode)
 	list := func(name string, v []string) {
@@ -112,6 +145,7 @@ func printSummary(w io.Writer, path string, cfg probe.Config) {
 	list("allow_cidrs", sum.AllowCIDRs)
 	list("allow_hosts", sum.AllowHosts)
 	list("deny_cidrs", sum.DenyCIDRs)
+	list("deny_hosts", sum.DenyHosts)
 	if cfg.ListenPorts == "" {
 		fmt.Fprintln(w, "listen_ports:  (none; this probe will not receive path tests)")
 	} else {
@@ -119,12 +153,39 @@ func printSummary(w io.Writer, path string, cfg probe.Config) {
 	}
 	fmt.Fprintf(w, "limits:        %d concurrent jobs, %d jobs per target address per minute\n",
 		cfg.Limits.MaxConcurrent, cfg.Limits.PerTargetPerMinute)
+	if !cfg.SSH.Enabled {
+		fmt.Fprintln(w, "ssh:           disabled (device_show and device_commands are not offered)")
+		return
+	}
+	cmds := cfg.SSH.CommandsFile
+	if cmds == "" {
+		cmds = "built-in lists"
+	}
+	fmt.Fprintf(w, "ssh:           enabled; commands %s; max_output_bytes %d; connect_timeout_ms %d; auth_failure_cooldown_s %d\n",
+		cmds, cfg.SSH.MaxOutputBytes, cfg.SSH.ConnectTimeoutMS, int(cfg.SSH.AuthFailureCooldown()/time.Second))
+	if cat, err := devcmd.Load(cfg.SSH.CommandsFile); err == nil {
+		var parts []string
+		for _, pc := range cat.List("") {
+			part := fmt.Sprintf("%s %d", pc.Platform, len(pc.Allow))
+			if pc.Local {
+				part += " (changed locally)"
+			}
+			parts = append(parts, part)
+		}
+		fmt.Fprintf(w, "allowed:       %s\n", strings.Join(parts, ", "))
+	}
+	if c, err := sshcfg.New(cfg.StateDir).Load(); err != nil {
+		fmt.Fprintf(w, "ssh store:     cannot be read here: %v\n", err)
+	} else {
+		fmt.Fprintf(w, "ssh store:     %d profiles, %d jump hosts (probe ssh profile list)\n", len(c.Profiles), len(c.Jumps))
+	}
 }
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
   probe [run] [--config FILE]         connect to the hub and serve jobs
   probe check-config [--config FILE]  validate the configuration and show the policy
+  probe ssh ... [--config FILE]       SSH profiles, jump hosts and host keys for device_show (probe ssh help)
   probe version                       print the version
 `)
 }

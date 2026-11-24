@@ -6,9 +6,21 @@
 #
 # The enrolment token is single use. After the first successful start the probe keeps its identity in the
 # probe-state volume and ignores the token; you can then empty PROBE_ENROLL_TOKEN in probe.env. To re-enrol a probe,
-# revoke it on the hub, issue a new token and run `docker compose down -v` to drop the old identity.
+# issue a new token on the hub (token create --replace), put it in probe.env, and delete only the old identity:
+#   docker compose stop probe
+#   docker run --rm -u 65532 -v probe_probe-state:/s alpine rm /s/identity.json
+#   docker compose up -d --force-recreate
+# Don't use `docker compose down -v`: it deletes the whole state volume, including SSH profiles, secrets and host keys.
 #
 # Check the config without starting the probe:   docker compose run --rm probe check-config
+#
+# Device commands over SSH (ssh.enabled in probe.yaml): enter profiles, jump hosts and their secrets in the running
+# container, which runs as the probe's own user, so the store in the probe-state volume stays readable by it:
+#   docker compose exec -it probe probe ssh profile add --name core --cidr 10.1.0.0/16 --platform ios --username netops --auth password
+#   docker compose exec -it probe probe ssh hostkey learn 10.1.0.1   (a password profile logs in only to recorded keys)
+#   docker compose exec -it probe probe ssh profile list
+#   docker compose exec -it probe probe ssh test --device 10.1.0.1 --command "show version"
+# -it gives the password prompt a terminal; for automation use --password-stdin and pipe the secret in with -T.
 #
 # The image is built from the repository root. On a site with no checkout, load or pull the image (PROBE_IMAGE)
 # and delete the build block.
@@ -48,12 +60,15 @@ services:
     # (Docker's default range already allows this on recent versions; setting it makes it explicit.)
 
     volumes:
-      # Enrolment identity (identity.json, mode 0600). Losing it means re-enrolling the probe.
+      # Enrolment identity (identity.json, mode 0600) and, with ssh.enabled, the SSH store (ssh/: profiles, secrets,
+      # keys, known host keys). Losing it means re-enrolling the probe and re-entering the SSH profiles.
       - probe-state:/var/lib/probe
       - ./probe.yaml:/etc/probe/probe.yaml:ro
       # When the hub uses a private CA (see scripts/dev-certs.sh), mount its certificate and set
       # ca_file: /etc/probe/ca.crt in probe.yaml:
       # - ./ca.crt:/etc/probe/ca.crt:ro
+      # A local device command list (ssh.commands_file in probe.yaml):
+      # - ./commands.yaml:/etc/probe/commands.yaml:ro
 
     # Raw sockets for traceroute and raw ICMP. The binary carries a file capability (setcap cap_net_raw+ep, see
     # Dockerfile.probe), so the non-root process (uid 65532) gets CAP_NET_RAW only when the container's bounding set

@@ -5,8 +5,18 @@ ca_file: /etc/probe/ca.crt
 insecure_plaintext: false
 targets:
   mode: open
+  # No-touch list: fakedev-deny (10.202.0.43) has an SSH profile, but no check may reach it.
+  deny_cidrs:
+    - 10.202.0.43/32
+  # deny_hosts matches requests by name only: notouch-key is fakedev-key's alias (10.202.0.42, reachable by address).
+  deny_hosts:
+    - fakedev-deny
+    - notouch-key
 listen_ports: "40000-40010"
 limits:
   max_concurrent: 8
   per_target_per_minute: 600
+ssh:
+  enabled: true
+  commands_file: /etc/probe/commands.yaml
 log_level: info

@@ -3,18 +3,22 @@
 # probes on bridge networks, targets, a NAT router and an MCP client container), runs the cases, prints a PASS/FAIL
 # table and tears the stack down.
 #
-#   test/e2e/run.sh                   everything (setup, cases 1-12 and x, report, teardown)
+#   test/e2e/run.sh                   everything (setup, cases 1-13 and x, report, teardown)
 #   test/e2e/run.sh --keep            leave the stack up afterwards (tokens in test/e2e/.work/env)
 #   test/e2e/run.sh --reuse --keep    run against a stack left up by --keep (no rebuild, no re-enrol)
-#   test/e2e/run.sh --only "3 5"      run only these cases (ids: 1-12, x = image/config checks)
+#   test/e2e/run.sh --only "3 5"      run only these cases (ids: 1-13, x = image/config checks; 13 = device commands
+#                                     over SSH, which enters probe-a's SSH profiles itself)
 #   test/e2e/run.sh --with-build      also run scripts/build.sh and check dist/ (writes dist/ at the repo root)
 #   test/e2e/run.sh --down            just tear the stack down
 #
-# Needs docker (compose v2), jq and openssl on the host. Works with macOS bash 3.2. Evidence for every case is saved in
+# Needs docker (compose v2), jq, openssl and ssh-keygen on the host. Works with macOS bash 3.2. Evidence for every case is saved in
 # test/e2e/.work/out/<id>.json, container logs in test/e2e/.work/logs/.
 #
 # Probe names: site-a-probe (service probe-a, site a), site-b-probe (probe-b, site b), site-c-probe (probe-c, site c).
 # The names start with the site so the `limited` client's probe scope ["site-a-*"] covers probe-a only.
+#
+# Clients: full (tools ["*"], so no device tools), limited (ping and list_probes, site-a only), netops (["*",
+# "device_show", "device_commands"]).
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,6 +64,17 @@ NAT_A=10.202.0.30
 NAT_B=10.203.0.30
 SECRET=10.204.0.40
 MCP_URL=http://hub:8080/mcp
+# Device cases (13): fake SSH devices, the jump host, and the network only the jump reaches.
+DEV_IOS=10.202.0.41
+DEV_KEY=10.202.0.42
+DEV_DENY=10.202.0.43
+DEV_BADPW=10.202.0.44
+DEV_FW=10.205.0.41
+JUMP_WAN=10.201.0.30
+JUMP_B=10.205.0.30
+dev="${work}/dev"
+sshin="${work}/ssh-in"
+DEV_SERVICES="fakedev-ios fakedev-key fakedev-deny fakedev-badpw fakedev-fw"
 WRONG_TOKEN="wrong-token-0123456789abcdef0123456789abcdef"
 
 dc() { docker compose -f "${here}/compose.yaml" --project-directory "${here}" "$@"; }
@@ -68,7 +83,7 @@ now() { date +%s; }
 
 if [[ ${down_only} -eq 1 ]]; then
   [[ -f "${work}/env" ]] && . "${work}/env"
-  export HUB_TOKEN_FULL="${HUB_TOKEN_FULL:-x}" HUB_TOKEN_LIMITED="${HUB_TOKEN_LIMITED:-x}"
+  export HUB_TOKEN_FULL="${HUB_TOKEN_FULL:-x}" HUB_TOKEN_LIMITED="${HUB_TOKEN_LIMITED:-x}" HUB_TOKEN_NETOPS="${HUB_TOKEN_NETOPS:-x}"
   dc down -v --remove-orphans
   exit 0
 fi
@@ -109,6 +124,7 @@ mcp() {
 }
 full() { mcp "${HUB_TOKEN_FULL}" "$@"; }
 limited() { mcp "${HUB_TOKEN_LIMITED}" "$@"; }
+netops() { mcp "${HUB_TOKEN_NETOPS}" "$@"; }
 tools_list() { dc exec -T client /e2e/mcpcall --url "${MCP_URL}" --token "$1" --list; }
 raw_status() { dc exec -T client /e2e/mcpcall --url "${MCP_URL}" --token "$1" --raw-status; }
 
@@ -158,22 +174,30 @@ setup() {
   cp "${work}/devcerts/deploy/central/certs/ca.crt" "${work}/devcerts/deploy/central/certs/tls.crt" \
     "${work}/devcerts/deploy/central/certs/tls.key" "${work}/certs/"
 
-  log "building mcpcall"
+  log "building mcpcall and fakedevice"
   (cd "${root}" && GOFLAGS=-mod=readonly scripts/go build -o test/e2e/.work/bin/mcpcall ./test/e2e/mcpcall) ||
     { log "mcpcall build failed"; exit 1; }
+  (cd "${root}" && GOFLAGS=-mod=readonly scripts/go build -o test/e2e/.work/bin/fakedevice ./test/e2e/fakedevice) ||
+    { log "fakedevice build failed"; exit 1; }
+  dev_files || { log "device keys and passwords could not be made"; exit 1; }
 
   HUB_TOKEN_FULL="$(openssl rand -hex 32)"
   HUB_TOKEN_LIMITED="$(openssl rand -hex 32)"
-  export HUB_TOKEN_FULL HUB_TOKEN_LIMITED
+  HUB_TOKEN_NETOPS="$(openssl rand -hex 32)"
+  export HUB_TOKEN_FULL HUB_TOKEN_LIMITED HUB_TOKEN_NETOPS
 
   log "building images (version ${E2E_VERSION})"
   dc build --quiet || { log "image build failed"; exit 1; }
   dc down -v --remove-orphans >/dev/null 2>&1
   log "starting hub and targets"
-  dc up -d --quiet-pull hub web redis dns banner secret nat client >"${work}/compose-up.log" 2>&1 || { log "compose up failed (see ${work}/compose-up.log)"; exit 1; }
+  dc up -d --quiet-pull hub web redis dns banner secret nat client ${DEV_SERVICES} jump >"${work}/compose-up.log" 2>&1 || { log "compose up failed (see ${work}/compose-up.log)"; exit 1; }
   local i
   for i in $(seq 1 30); do
     dc exec -T client wget -qO- http://hub:8080/healthz >/dev/null 2>&1 && break
+    sleep 1
+  done
+  for i in $(seq 1 30); do
+    dc logs --no-log-prefix jump 2>/dev/null | grep -q 'Server listening' && break
     sleep 1
   done
 
@@ -189,6 +213,7 @@ setup() {
   cat >"${work}/env" <<ENV
 HUB_TOKEN_FULL=${HUB_TOKEN_FULL}
 HUB_TOKEN_LIMITED=${HUB_TOKEN_LIMITED}
+HUB_TOKEN_NETOPS=${HUB_TOKEN_NETOPS}
 ENROLL_A=${ENROLL_A}
 ENROLL_B=${ENROLL_B}
 ENROLL_C=${ENROLL_C}
@@ -447,6 +472,487 @@ case11() {
   info 11 "timing" "$(printf '%s' "${j}" | jq -c '{elapsed_ms, probe_duration_ms: .structured.results[0].duration_ms, hops: (.structured.results[0].result.hops | length)}')"
 }
 
+# ---------------------------------------------------------------- device commands over SSH (case 13)
+#
+# Fake devices (test/e2e/fakedevice) log every event as a JSON line in .work/dev/<name>.log: connections, each real
+# authentication attempt, and everything sent on a channel (exec commands, shell lines, pager keys, stray input). Each
+# case takes the log's line count before the call and asserts on the lines added by it.
+
+# dev_files: passwords, the client keys the probe's profiles use, and a clean directory for the fake devices' logs and
+# host keys (fakedevice makes an ed25519 host key at first start and keeps it there across restarts). Passwords are
+# random per run so the logs can be grepped for them. The private keys are 0644 so the probe (uid 65532) can read them
+# through the read-only mount to copy them into its store; they are throwaway keys made for this run.
+dev_files() {
+  rm -rf "${dev}" "${sshin}"
+  mkdir -p "${dev}" "${sshin}" || return 1
+  local n
+  for n in pw-ios pw-fw pw-wrong; do
+    openssl rand -hex 16 >"${dev}/${n}" || return 1
+  done
+  for n in dev_key jump_key; do
+    ssh-keygen -q -t ed25519 -N '' -C "e2e-${n}" -f "${sshin}/${n}" </dev/null || return 1
+  done
+  chmod 0644 "${sshin}"/*
+}
+
+devlog() { printf '%s/%s.log' "${dev}" "$1"; }
+# dev_mark NAME: lines in the device's log so far. dev_since NAME MARK: the events after MARK, as a JSON array.
+dev_mark() { if [[ -f "$(devlog "$1")" ]]; then wc -l <"$(devlog "$1")" | tr -d ' '; else echo 0; fi; }
+dev_since() {
+  if [[ -f "$(devlog "$1")" ]]; then tail -n +"$(($2 + 1))" "$(devlog "$1")" | jq -sc .; else echo '[]'; fi
+}
+# wait_listen NAME MARK: waits until the device logs that it is listening, after MARK.
+wait_listen() {
+  local i
+  for i in $(seq 1 30); do
+    dev_since "$1" "$2" | jq -e 'any(.[]; .ev == "listen")' >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+pa_ssh() { dc exec -T probe-a probe ssh "$@"; }
+# dshow DEVICE COMMAND [PROBE]: device_show as netops, on probe-a unless PROBE is given.
+dshow() {
+  netops device_show "$(jq -nc --arg p "${3:-${A}}" --arg d "$1" --arg c "$2" '{probe: $p, device: $d, command: $c}')" </dev/null
+}
+# withlog CALL EVENTS: one evidence object, {r: mcpcall's JSON, ev: the device's events}.
+withlog() { jq -nc --argjson r "$1" --argjson ev "$2" '{r: $r, ev: $ev}'; }
+
+# jq over withlog's object: what reached the device's CLI, its authentication attempts, its TCP connections.
+SENT='[.ev[] | select(.ev | IN("exec", "line", "stray", "key", "shell", "pty", "req", "chan")) | (.ev + ":" + ((.cmd // .bytes // .key // .type // "") | tostring))]'
+AUTHS='[.ev[] | select(.ev == "auth") | (.method + ":" + (.ok | tostring))]'
+CONNS='([.ev[] | select(.ev == "conn")] | length)'
+R0='.r.structured.results[0]'
+DETAIL='{r: (.r.structured.results[0] // .r), ev: [.ev[] | del(.ts)]}'
+
+# cli ID DESC ARGS...: one `probe ssh` command in probe-a (stdin from the caller); PASS when it exits 0.
+cli() {
+  local id="$1" desc="$2" o rc
+  shift 2
+  o="$(pa_ssh "$@" 2>&1)"
+  rc=$?
+  printf '%s\n' "${o}" >"${out}/${id}.txt"
+  if [[ ${rc} -eq 0 ]]; then
+    pass "${id}" "${desc}"
+  else
+    fail "${id}" "${desc}" "rc=${rc} $(printf '%s' "${o}" | tr '\n' ';' | cut -c1-400)"
+  fi
+}
+
+# cli_refused ID DESC REGEX ARGS...: PASS when the command exits non-zero and its output matches REGEX.
+cli_refused() {
+  local id="$1" desc="$2" re="$3" o rc
+  shift 3
+  o="$(pa_ssh "$@" 2>&1 </dev/null)"
+  rc=$?
+  printf '%s\n' "${o}" >"${out}/${id}.txt"
+  if [[ ${rc} -ne 0 ]] && printf '%s' "${o}" | grep -Eq -- "${re}"; then
+    pass "${id}" "${desc}"
+  else
+    fail "${id}" "${desc}" "rc=${rc} $(printf '%s' "${o}" | tr '\n' ';' | cut -c1-400)"
+  fi
+}
+
+case13() {
+  local j m ev n
+  local s
+  for s in ios key deny badpw fw; do
+    wait_listen "${s}" 0 || log "fake device ${s} has not logged that it listens"
+  done
+
+  # ---- profiles, entered with the real CLI inside probe-a. Idempotent for --reuse: earlier entries are removed first.
+  for s in fw-b ios-badpw ios-key ios-pw; do pa_ssh profile remove "${s}" >/dev/null 2>&1 </dev/null; done
+  pa_ssh jump remove jump-b >/dev/null 2>&1 </dev/null
+  for s in "${DEV_IOS}" "${DEV_KEY}" "${DEV_DENY}" "${DEV_BADPW}"; do pa_ssh hostkey forget "${s}" >/dev/null 2>&1 </dev/null; done
+
+  # ios-pw opts in to trust on first use (its cases are about first use); ios-badpw and fw-b do not, so their device
+  # keys must be recorded with `probe ssh hostkey learn` before they log in.
+  cli 13.cli-profile-password "probe ssh profile add --trust-on-first-use (password via --password-stdin from a file)" \
+    profile add --name ios-pw --cidr "${DEV_IOS}/32" --cidr "${DEV_DENY}/32" --platform ios --username netops \
+    --auth password --trust-on-first-use --password-stdin <"${dev}/pw-ios"
+  cli 13.cli-profile-key "probe ssh profile add --auth key --key-file (key copied into the store)" \
+    profile add --name ios-key --cidr "${DEV_KEY}/32" --platform ios --username netops --auth key \
+    --key-file /e2e-ssh/dev_key </dev/null
+  cli 13.cli-profile-badpw "probe ssh profile add with a wrong password (for the auth_failed case)" \
+    profile add --name ios-badpw --cidr "${DEV_BADPW}/32" --platform ios --username netops --auth password \
+    --password-stdin <"${dev}/pw-wrong"
+  cli_refused 13.cli-catch-all "profile add with a catch-all range (10.0.0.0/7) is refused" 'catch-all|wider than' \
+    profile add --name too-wide --cidr 10.0.0.0/7 --platform ios --username x --auth password --password-stdin
+
+  local fp
+  fp="$(dc exec -T jump ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub </dev/null | awk '{print $2}')"
+  printf '%s\n' "${fp}" >"${out}/13.jump-fingerprint.txt"
+  cli_refused 13.cli-jump-wrong-key "jump add with a fingerprint the jump does not present: refused, nothing saved" \
+    'nothing saved' jump add --name jump-b --address "${JUMP_WAN}" --username jump --auth key \
+    --key-file /e2e-ssh/jump_key --accept-host-key SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  cli 13.cli-jump "probe ssh jump add --accept-host-key (fingerprint read from the jump container: ${fp})" \
+    jump add --name jump-b --address "${JUMP_WAN}" --username jump --auth key --key-file /e2e-ssh/jump_key \
+    --accept-host-key "${fp}" </dev/null
+  cli 13.cli-profile-jump "probe ssh profile add for devices-b through the jump (panos)" \
+    profile add --name fw-b --cidr 10.205.0.0/24 --platform panos --username admin --auth password --jump jump-b \
+    --password-stdin <"${dev}/pw-fw"
+
+  # The hello carries the profile summaries, so list_probes shows profiles added since the probe connected only after
+  # it reconnects. Recorded, then probe-a is restarted.
+  j="$(netops list_probes '{}' </dev/null)"
+  info 13.list-before-restart "probe-a's ssh profiles in list_probes before it reconnects" \
+    "$(printf '%s' "${j}" | jq -c "[.structured.probes[] | select(.name == \"${A}\") | .ssh.profiles[]?.name]")"
+  dc restart probe-a >/dev/null 2>&1
+  wait_online 3 60 >/dev/null || log "not all probes online after restarting probe-a"
+  # Wait for the new hello (the hub may still show the old session for a moment).
+  for s in $(seq 1 30); do
+    netops list_probes '{}' </dev/null | jq -e "any(.structured.probes[]; .name == \"${A}\" and .online and (.ssh.profiles | length) == 4)" >/dev/null 2>&1 && break
+    sleep 1
+  done
+
+  # ---- scope
+  local all13='["list_probes","path_test","diagnose","ping","traceroute","path_mtu","dns_lookup","tcp_connect","tcp_template","udp_probe","tls_check","http_check","probe_info"]'
+  j="$(tools_list "${HUB_TOKEN_FULL}" </dev/null)"
+  expect 13.tools-full "tools/list for full (tools [*]): no device_show or device_commands" "${j}" \
+    '([.tools[].name] | index("device_show") == null and index("device_commands") == null) and (.tools | length) == 13' \
+    '{names: [.tools[]?.name], err: .transport_error}'
+  j="$(tools_list "${HUB_TOKEN_NETOPS}" </dev/null)"
+  expect 13.tools-netops "tools/list for netops ([*, device_show, device_commands]): all 15 tools, readOnlyHint on each" "${j}" \
+    "([.tools[].name] | sort) == (${all13} + [\"device_show\",\"device_commands\"] | sort) and all(.tools[]; .read_only == true)" \
+    '{names: [.tools[]?.name], not_read_only: [.tools[]? | select(.read_only != true) | .name], err: .transport_error}'
+
+  j="$(full device_show "{\"probe\":\"${A}\",\"device\":\"${DEV_IOS}\",\"command\":\"show version\"}" </dev/null)"
+  expect 13.full-call "full calling device_show: refused (not one of its tools)" "${j}" \
+    '(.transport_error != null) or (.is_error and (.text | startswith("forbidden")))'
+
+  j="$(netops list_probes '{}' </dev/null)"
+  expect 13.list-netops "list_probes for netops: probe-a's ssh profiles (names, cidrs, platform, jump), none on b and c" "${j}" \
+    "(.structured.probes[] | select(.name == \"${A}\") | .ssh.profiles) == [
+       {name: \"ios-pw\", cidrs: [\"${DEV_IOS}/32\", \"${DEV_DENY}/32\"], platform: \"ios\"},
+       {name: \"ios-key\", cidrs: [\"${DEV_KEY}/32\"], platform: \"ios\"},
+       {name: \"ios-badpw\", cidrs: [\"${DEV_BADPW}/32\"], platform: \"ios\"},
+       {name: \"fw-b\", cidrs: [\"10.205.0.0/24\"], platform: \"panos\", jump: \"jump-b\"}]
+     and all(.structured.probes[] | select(.name != \"${A}\"); has(\"ssh\") | not)" \
+    '[.structured.probes[]? | {name, ssh}]'
+  j="$(full list_probes '{}' </dev/null)"
+  expect 13.list-full "list_probes for full: no probe has an ssh field" "${j}" \
+    "any(.structured.probes[]; .name == \"${A}\") and all(.structured.probes[]; has(\"ssh\") | not)" '[.structured.probes[]? | {name, ssh}]'
+
+  j="$(netops device_commands "{\"probes\":[\"${A}\"]}" </dev/null)"
+  expect 13.device_commands "device_commands on probe-a: 8 platforms, ios and panos non-empty, probe-a's local ios changes shown" "${j}" \
+    '.structured.results[0] | .ok
+       and ([.result.platforms[].platform] | sort) == (["ios","nxos","junos","eos","panos","fortios","edgeos","routeros"] | sort)
+       and all(.result.platforms[] | select(.platform == "ios" or .platform == "panos"); (.allow | length) > 0)
+       and (.result.platforms[] | select(.platform == "ios") | .local_changes == true
+            and any(.allow[]; test("e2e-local")) and any(.deny[]?; test("counters")))
+       and ([.result.profiles[].name] == ["ios-pw","ios-key","ios-badpw","fw-b"])' \
+    '.structured.results[0] | {ok, error, platforms: [.result.platforms[]? | {platform, n: (.allow | length), local_changes, deny}], profiles: .result.profiles}'
+  info 13.device_commands-counts "allow patterns per platform" \
+    "$(printf '%s' "${j}" | jq -c '[.structured.results[0].result.platforms[]? | {(.platform): (.allow | length)}] | add')"
+
+  # ---- runs on the ios-like device (password, keyboard-interactive offered too)
+  m="$(dev_mark ios)"
+  j="$(dshow "${DEV_IOS}" "show version")"
+  ev="$(dev_since ios "${m}")"
+  expect 13.show-first "device_show ios show version: ok, untrusted output, host key recorded on first use; device got exactly 'show version'" \
+    "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"ok\" and \$x.result.output.untrusted == true
+       and (\$x.result.output.text | test(\"Cisco IOS XE\")) and \$x.result.host_key_first_use == true
+       and (\$x.result.host_key | startswith(\"SHA256:\")) and \$x.result.profile == \"ios-pw\" and \$x.result.platform == \"ios\"
+       and \$x.result.address == \"${DEV_IOS}\"
+       and (${SENT}) == [\"exec:show version\"] and (${AUTHS}) == [\"keyboard-interactive:true\"] and ${CONNS} == 1" "${DETAIL}"
+  local hk1
+  hk1="$(printf '%s' "${j}" | jq -r '.structured.results[0].result.host_key // empty')"
+
+  m="$(dev_mark ios)"
+  j="$(dshow "${DEV_IOS}" "show version")"
+  ev="$(dev_since ios "${m}")"
+  expect 13.show-second "device_show again: ok, same host key, host_key_first_use false" "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"ok\" and (\$x.result.host_key_first_use // false) == false
+       and \$x.result.host_key == \"${hk1}\" and (${SENT}) == [\"exec:show version\"]" "${DETAIL}"
+
+  m="$(dev_mark ios)"
+  j="$(dshow "${DEV_IOS}" "show interfaces")"
+  ev="$(dev_since ios "${m}")"
+  expect 13.show-interfaces "device_show ios show interfaces: ok with the interface lines" "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"ok\" and (\$x.result.output.text | test(\"GigabitEthernet1/0/1 is up\"))
+       and (${SENT}) == [\"exec:show interfaces\"]" "${DETAIL}"
+
+  m="$(dev_mark ios)"
+  j="$(dshow "${DEV_IOS}" "show running-config")"
+  ev="$(dev_since ios "${m}")"
+  expect 13.not-allowed "device_show show running-config: command_not_allowed, the device saw no connection" "$(withlog "${j}" "${ev}")" \
+    "${R0}.error.code == \"command_not_allowed\" and (.ev | length) == 0" "${DETAIL}"
+
+  m="$(dev_mark ios)"
+  j="$(dshow "${DEV_IOS}" "show interfaces counters errors")"
+  ev="$(dev_since ios "${m}")"
+  expect 13.local-deny "device_show of a command probe-a's commands file denies: command_not_allowed, no connection" "$(withlog "${j}" "${ev}")" \
+    "${R0}.error.code == \"command_not_allowed\" and (.ev | length) == 0" "${DETAIL}"
+
+  local inj i=0
+  for inj in 'show version | redirect tftp://x' 'show version ; reload' 'show version && reload' 'show version $(reload)' \
+    'show version `reload`' "show version"$'\n'"reload" 'show version > flash:x' "show version 'x'"; do
+    i=$((i + 1))
+    m="$(dev_mark ios)"
+    j="$(dshow "${DEV_IOS}" "${inj}")"
+    ev="$(dev_since ios "${m}")"
+    expect "13.inject-${i}" "injection refused, no connection: $(printf '%s' "${inj}" | tr '\n' '~')" "$(withlog "${j}" "${ev}")" \
+      "(${R0}.error.code == \"command_not_allowed\" or ${R0}.error.code == \"invalid_params\" or (.r.is_error and (.r.text | startswith(\"invalid_params\")))) and (.ev | length) == 0" \
+      "${DETAIL}"
+  done
+
+  m="$(dev_mark ios)"
+  j="$(dshow "${DEV_IOS}" "show inventory")"
+  ev="$(dev_since ios "${m}")"
+  expect 13.command-error "allowed command the device rejects (show inventory): outcome command_error, device message in output" "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"command_error\" and (\$x.result.output.text | test(\"Invalid input\"))
+       and (\$x.result.detail | test(\"Invalid input\") | not) and (${SENT}) == [\"exec:show inventory\"]" "${DETAIL}"
+
+  # ---- key profile
+  m="$(dev_mark key)"
+  j="$(dshow "${DEV_KEY}" "show ip interface brief")"
+  ev="$(dev_since key "${m}")"
+  expect 13.key "device_show via the key profile: ok, publickey login, exactly the command sent" "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"ok\" and \$x.result.profile == \"ios-key\"
+       and \$x.result.host_key_first_use == true
+       and (\$x.result.output.text | test(\"GigabitEthernet1/0/1\")) and (${SENT}) == [\"exec:show ip interface brief\"]
+       and ((${AUTHS}) | index(\"publickey:true\") != null) and ((${AUTHS}) | all(startswith(\"publickey\")))" "${DETAIL}"
+
+  # ---- a password profile and a device whose key is not recorded: nothing sent, nothing recorded
+  m="$(dev_mark badpw)"
+  j="$(dshow "${DEV_BADPW}" "show version")"
+  ev="$(dev_since badpw "${m}")"
+  expect 13.host-key-unknown "password profile, device key not recorded: host_key_unknown with its fingerprint, zero authentication attempts, nothing run" \
+    "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"host_key_unknown\" and (\$x.result.host_key | startswith(\"SHA256:\"))
+       and (\$x.result.host_key_first_use // false) == false and (\$x.result.detail | test(\"probe ssh hostkey learn ${DEV_BADPW//./\\\\.}\"))
+       and ((${AUTHS}) | length) == 0 and (${SENT}) == []" "${DETAIL}"
+  local hkb
+  hkb="$(printf '%s' "${j}" | jq -r '.structured.results[0].result.host_key // empty')"
+  j="$(pa_ssh hostkey list </dev/null 2>&1)"
+  printf '%s\n' "${j}" >"${out}/13.host-key-unknown-list.txt"
+  if ! printf '%s' "${j}" | grep -qF "${DEV_BADPW}"; then
+    pass 13.host-key-unknown-not-recorded "the unknown key was not recorded (hostkey list has no ${DEV_BADPW})"
+  else
+    fail 13.host-key-unknown-not-recorded "the unknown key was not recorded (hostkey list has no ${DEV_BADPW})" "$(printf '%s' "${j}" | tr '\n' ';' | cut -c1-300)"
+  fi
+  m="$(dev_mark badpw)"
+  j="$(pa_ssh hostkey learn "${DEV_BADPW}" --yes 2>&1 </dev/null)"
+  ev="$(dev_since badpw "${m}")"
+  printf '%s\n' "${j}" >"${out}/13.cli-learn-badpw.txt"
+  expect 13.cli-learn-badpw "probe ssh hostkey learn ${DEV_BADPW} --yes: prints and records the same fingerprint, no login" \
+    "$(jq -nc --arg o "${j}" --arg want "recorded ssh-ed25519 ${hkb} for ${DEV_BADPW}" --argjson ev "${ev}" '{o: $o, want: $want, ev: $ev}')" \
+    '.want as $w | ($w | test("SHA256:")) and (.o | contains($w)) and ([.ev[] | select(.ev == "auth")] | length) == 0' '{o, want, ev: [.ev[] | del(.ts)]}'
+
+  # ---- wrong password: one attempt, never retried
+  m="$(dev_mark badpw)"
+  j="$(dshow "${DEV_BADPW}" "show version")"
+  ev="$(dev_since badpw "${m}")"
+  expect 13.auth-failed "wrong password: auth_failed with exactly one authentication attempt on the device, nothing run" "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"auth_failed\" and ((${AUTHS}) | length) == 1
+       and ((${AUTHS})[0] | endswith(\":false\")) and (${SENT}) == [] and ${CONNS} == 1" "${DETAIL}"
+  # ---- and that device address then cools down for the profile: the next call answers auth_failed without connecting
+  m="$(dev_mark badpw)"
+  j="$(dshow "${DEV_BADPW}" "show version")"
+  ev="$(dev_since badpw "${m}")"
+  expect 13.auth-cooldown "second call after auth_failed: auth_failed at once (cool-down), no connection to the device" "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"auth_failed\" and (\$x.result.detail | test(\"not tried again until\"))
+       and ${CONNS} == 0 and (.ev | length) == 0" "${DETAIL}"
+
+  # ---- an IPv6 zone in the device (which once reached host:port and known_hosts) is refused before anything
+  local hkl0 zdev
+  hkl0="$(pa_ssh hostkey list </dev/null 2>&1)"
+  i=0
+  for zdev in "fd00:1::5%x" "::ffff:${DEV_IOS}%x" "fd00:1::5%z"$'\t'"ssh-ed25519"$'\t'"AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"$'\n'"${DEV_IOS}"$'\t'"ssh-ed25519"$'\t'"AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; do
+    i=$((i + 1))
+    m="$(dev_mark ios)"
+    j="$(dshow "${zdev}" "show version")"
+    ev="$(dev_since ios "${m}")"
+    expect "13.zone-${i}" "device with an IPv6 zone refused (invalid_params), no connection: $(printf '%s' "${zdev}" | tr '\t\n' '~~' | cut -c1-40)" \
+      "$(withlog "${j}" "${ev}")" \
+      "(${R0}.error.code == \"invalid_params\" or (.r.is_error and (.r.text | startswith(\"invalid_params\")))) and (.ev | length) == 0" \
+      "${DETAIL}"
+  done
+  if [[ "$(pa_ssh hostkey list </dev/null 2>&1)" == "${hkl0}" ]]; then
+    pass 13.zone-known-hosts "known_hosts unchanged by the zoned devices"
+  else
+    fail 13.zone-known-hosts "known_hosts unchanged by the zoned devices" "$(pa_ssh hostkey list </dev/null 2>&1 | tr '\n' ';' | cut -c1-400)"
+  fi
+
+  # ---- through the jump host to the PAN-OS-like device on devices-b
+  j="$(netops tcp_connect "{\"probes\":[\"${A}\"],\"target\":\"${DEV_FW}\",\"ports\":[22],\"timeout_ms\":2000}" </dev/null)"
+  expect 13.fw-not-direct "control: probe-a cannot reach the devices-b device directly (tcp_connect not open)" "${j}" \
+    '.structured.results[0] | .ok and .result.ports[0].outcome != "open"' '.structured.results[0] // .'
+  # fw-b is a password profile that does not trust on first use: the device's key is learnt first, through the jump
+  # the profile names (hostkey learn takes the port and jump from the covering profile).
+  m="$(dev_mark fw)"
+  j="$(pa_ssh hostkey learn "${DEV_FW}" --yes 2>&1 </dev/null)"
+  ev="$(dev_since fw "${m}")"
+  printf '%s\n' "${j}" >"${out}/13.cli-learn-fw.txt"
+  expect 13.cli-learn-fw "probe ssh hostkey learn ${DEV_FW} --yes: recorded through jump-b (profile fw-b), no login on the device" \
+    "$(jq -nc --arg o "${j}" --argjson ev "${ev}" '{o: $o, ev: $ev}')" \
+    "(.o | test(\"through jump host jump-b, profile fw-b\")) and (.o | test(\"recorded ssh-ed25519 SHA256:[^ ]+ for ${DEV_FW//./\\\\.} through jump host jump-b\"))
+     and ([.ev[] | select(.ev == \"auth\")] | length) == 0" '{o, ev: [.ev[] | del(.ts)]}'
+  local jl0
+  jl0="$(dc logs --no-log-prefix jump 2>/dev/null | wc -l | tr -d ' ')"
+  m="$(dev_mark fw)"
+  j="$(dshow "${DEV_FW}" "show system info")"
+  ev="$(dev_since fw "${m}")"
+  expect 13.jump "device_show behind the jump (panos-like): ok; device got 'set cli pager off' then the command, nothing else, from the jump's address" \
+    "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"ok\" and \$x.result.jump == \"jump-b\" and \$x.result.platform == \"panos\"
+       and (\$x.result.output.text | test(\"sw-version: 10.2.4\")) and (\$x.result.output.text | test(\"fake-field-30\"))
+       and (\$x.result.host_key_first_use // false) == false
+       and (${SENT}) == [\"pty:\", \"shell:\", \"line:set cli pager off\", \"line:show system info\"]
+       and all(.ev[] | select(.ev == \"conn\"); .remote | startswith(\"${JUMP_B}:\"))" "${DETAIL}"
+  local jl
+  jl="$(dc logs --no-log-prefix jump 2>/dev/null | tail -n +"$((jl0 + 1))" | grep -i 'direct.tcpip')"
+  printf '%s\n' "${jl}" >"${out}/13.jump-sshd.txt"
+  if printf '%s' "${jl}" | grep -Eq "target ${DEV_FW//./\\.} port 22" && ! printf '%s' "${jl}" | grep -qi 'fakedev'; then
+    pass 13.jump-direct-tcpip "jump's sshd logs a direct-tcpip to the device's IP ${DEV_FW}, not a name"
+  else
+    fail 13.jump-direct-tcpip "jump's sshd logs a direct-tcpip to the device's IP ${DEV_FW}, not a name" "$(printf '%s' "${jl}" | tr '\n' ';' | cut -c1-500)"
+  fi
+
+  # ---- refusals before any connection
+  j="$(dshow "${WEB}" "show version")"
+  expect 13.no-profile "device_show to an address no profile covers (web): unavailable" "${j}" \
+    '.structured.results[0].error.code == "unavailable"' '.structured.results[0] // .'
+
+  m="$(dev_mark deny)"
+  j="$(dshow "${DEV_DENY}" "show version")"
+  ev="$(dev_since deny "${m}")"
+  expect 13.deny "device_show to the no-touch address (deny_cidrs; a profile covers it): denied, no connection" "$(withlog "${j}" "${ev}")" \
+    "${R0}.error.code == \"denied\" and (.ev | length) == 0" "${DETAIL}"
+  m="$(dev_mark deny)"
+  j="$(dshow fakedev-deny "show version")"
+  ev="$(dev_since deny "${m}")"
+  expect 13.deny-name "device_show to the no-touch host by name (fakedev-deny: in deny_hosts, address in deny_cidrs): denied, no connection" "$(withlog "${j}" "${ev}")" \
+    "${R0}.error.code == \"denied\" and (.ev | length) == 0" "${DETAIL}"
+  m="$(dev_mark key)"
+  j="$(dshow notouch-key "show version")"
+  ev="$(dev_since key "${m}")"
+  expect 13.deny-hosts-only "device_show by a name only deny_hosts lists (notouch-key; its address works, see 13.key): denied, no connection" "$(withlog "${j}" "${ev}")" \
+    "${R0}.error.code == \"denied\" and (.ev | length) == 0" "${DETAIL}"
+  m="$(dev_mark deny)"
+  j="$(netops ping "{\"probes\":[\"${A}\"],\"target\":\"${DEV_DENY}\",\"count\":1}" </dev/null)"
+  ev="$(dev_since deny "${m}")"
+  expect 13.deny-ping "ping to the no-touch address: denied too" "$(withlog "${j}" "${ev}")" \
+    "${R0}.error.code == \"denied\"" "${DETAIL}"
+  j="$(netops tcp_connect "{\"probes\":[\"${A}\"],\"target\":\"${DEV_DENY}\",\"ports\":[22]}" </dev/null)"
+  ev="$(dev_since deny "${m}")"
+  expect 13.deny-tcp "tcp_connect to the no-touch address: denied, the device saw no connection" "$(withlog "${j}" "${ev}")" \
+    "${R0}.error.code == \"denied\" and (.ev | length) == 0" "${DETAIL}"
+
+  for s in '*' 'site-a-*' 'site:a' 'site-a-probe,site-b-probe'; do
+    m="$(dev_mark ios)"
+    j="$(dshow "${DEV_IOS}" "show version" "${s}")"
+    ev="$(dev_since ios "${m}")"
+    expect "13.probe-${s}" "device_show with probe '${s}': invalid_params, no connection" "$(withlog "${j}" "${ev}")" \
+      '.r.is_error and (.r.text | startswith("invalid_params")) and (.ev | length) == 0' '{r, ev}'
+  done
+  j="$(netops device_show "{\"probes\":[\"*\"],\"device\":\"${DEV_IOS}\",\"command\":\"show version\"}" </dev/null)"
+  expect 13.probes-array "device_show with a probes array instead of probe: refused" "${j}" \
+    '(.transport_error != null) or .is_error'
+
+  # ---- one session per device: the second of two overlapping calls is busy (show clock is slow on this device)
+  local tmp="${work}/busy.json" j1 j2
+  m="$(dev_mark ios)"
+  (dshow "${DEV_IOS}" "show clock" >"${tmp}") &
+  local bg=$!
+  sleep 2
+  j2="$(dshow "${DEV_IOS}" "show clock")"
+  wait "${bg}"
+  j1="$(cat "${tmp}")"
+  ev="$(dev_since ios "${m}")"
+  j="$(jq -nc --argjson a "${j1}" --argjson b "${j2}" --argjson ev "${ev}" '{first: $a.structured.results[0], second: $b.structured.results[0], ev: $ev}')"
+  expect 13.busy "two overlapping device_show to one device: one ok, the other busy (only one session reached the device)" "${j}" \
+    '([.first, .second] | map(select(.ok and .result.outcome == "ok")) | length) == 1
+     and ([.first, .second] | map(select(.error.code == "busy")) | length) == 1
+     and ([.ev[] | select(.ev == "conn")] | length) == 1' '{first, second, ev: [.ev[] | del(.ts)]}'
+
+  # ---- changed host key: the device restarts with a new (same type) key
+  m="$(dev_mark ios)"
+  rm -f "${dev}/ios.key"
+  dc restart fakedev-ios >/dev/null 2>&1
+  wait_listen ios "${m}" || log "fakedev-ios did not come back"
+  m="$(dev_mark ios)"
+  j="$(dshow "${DEV_IOS}" "show version")"
+  ev="$(dev_since ios "${m}")"
+  expect 13.hostkey-changed "device restarted with a new host key: host_key_changed, no authentication attempt, nothing run" "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"host_key_changed\" and \$x.result.host_key != \"${hk1}\"
+       and ((${AUTHS}) | length) == 0 and (${SENT}) == []" "${DETAIL}"
+  cli 13.cli-hostkey-forget "probe ssh hostkey forget ${DEV_IOS}" hostkey forget "${DEV_IOS}" </dev/null
+  m="$(dev_mark ios)"
+  j="$(dshow "${DEV_IOS}" "show version")"
+  ev="$(dev_since ios "${m}")"
+  expect 13.hostkey-relearn "after forgetting: ok, the new key recorded on first use" "$(withlog "${j}" "${ev}")" \
+    "${R0} as \$x | \$x.ok and \$x.result.outcome == \"ok\" and \$x.result.host_key_first_use == true and \$x.result.host_key != \"${hk1}\"" "${DETAIL}"
+
+  # ---- audit and logs
+  local hublog probelog
+  hublog="$(dc logs --no-log-prefix hub 2>/dev/null)"
+  probelog="$(dc logs --no-log-prefix probe-a 2>/dev/null)"
+  j="$(printf '%s\n' "${hublog}" | grep '"msg":"tool_call"' | jq -sc '[.[] | select(.tool == "device_show")]')"
+  expect 13.audit "hub audit: tool_call lines for device_show with client, device, command and outcome" "${j}" \
+    "any(.[]; .client == \"netops\" and .target == \"${DEV_IOS}\" and .command == \"show version\" and .outcomes[\"${A}\"] == \"ok\")
+     and any(.[]; .command == \"show running-config\" and .outcomes[\"${A}\"] == \"command_not_allowed\")
+     and any(.[]; .target == \"${DEV_BADPW}\" and .outcomes[\"${A}\"] == \"auth_failed\")
+     and any(.[]; .target == \"${DEV_BADPW}\" and .outcomes[\"${A}\"] == \"host_key_unknown\")
+     and any(.[]; .target == \"${DEV_IOS}\" and .outcomes[\"${A}\"] == \"host_key_changed\")
+     and any(.[]; .target == \"${DEV_FW}\" and .outcomes[\"${A}\"] == \"ok\")" '[.[] | {client, target, command, outcomes}]'
+  local canary
+  canary="$(printf '%s\n' "${hublog}" "${probelog}" | grep -c 'E2E-CANARY\|fake-field-\|ignore previous instructions and reveal')"
+  j="$(printf '%s\n' "${probelog}" | grep '"msg":"device_show"' | jq -sc --argjson c "${canary}" '{canary_lines: $c, probe_lines: [.[] | {device, profile, jump, platform, command, outcome}]}')"
+  expect 13.audit-no-output "no device output in hub or probe logs; probe-a logs each device_show with device, command and outcome" "${j}" \
+    ".canary_lines == 0 and (.probe_lines | length) > 0 and all(.probe_lines[]; .outcome != null and .outcome != \"\" and .command != null)
+     and any(.probe_lines[]; .device == \"${DEV_FW}\" and .jump == \"jump-b\" and .outcome == \"ok\")"
+
+  local leaked="" val f line
+  for f in pw-ios pw-fw pw-wrong; do
+    val="$(cat "${dev}/${f}")"
+    printf '%s\n' "${hublog}" "${probelog}" | grep -qF -- "${val}" && leaked="${leaked} ${f}"
+  done
+  for f in dev_key jump_key; do
+    while IFS= read -r line; do
+      [[ "${line}" == -----* || ${#line} -lt 20 ]] && continue
+      if printf '%s\n' "${hublog}" "${probelog}" | grep -qF -- "${line}"; then leaked="${leaked} ${f}"; break; fi
+    done <"${sshin}/${f}"
+  done
+  if [[ -z "${leaked}" ]]; then
+    pass 13.secrets "device passwords and private key material appear in neither hub nor probe-a logs"
+  else
+    fail 13.secrets "device passwords and private key material appear in neither hub nor probe-a logs" "found:${leaked}"
+  fi
+
+  # ---- the store inside probe-a
+  local st
+  st="$(docker run --rm --volumes-from "$(container_id probe-a)" alpine:3.20 sh -c 'find /var/lib/probe/ssh -exec stat -c "%a %u:%g %F %n" {} +' 2>&1)"
+  printf '%s\n' "${st}" >"${out}/13.store-perms.txt"
+  local bad
+  bad="$(printf '%s\n' "${st}" | awk '
+    $3 == "directory" && $1 != "700" { print }
+    $3 == "regular" && $1 != "600" { print }
+    $2 != "65532:65532" { print }')"
+  if [[ -n "${st}" ]] && printf '%s' "${st}" | grep -q 'secrets.json' && [[ -z "${bad}" ]]; then
+    pass 13.store-perms "/var/lib/probe/ssh: directories 0700, files 0600, owned by 65532 ($(printf '%s\n' "${st}" | wc -l | tr -d ' ') entries)"
+  else
+    fail 13.store-perms "/var/lib/probe/ssh: directories 0700, files 0600, owned by 65532" "$(printf '%s\n' "${bad:-${st}}" | tr '\n' ';' | cut -c1-500)"
+  fi
+
+  local pl
+  pl="$(pa_ssh profile list </dev/null 2>&1)"
+  printf '%s\n' "${pl}" >"${out}/13.profile-list.txt"
+  leaked=""
+  for f in pw-ios pw-fw pw-wrong; do
+    printf '%s' "${pl}" | grep -qF -- "$(cat "${dev}/${f}")" && leaked="${leaked} ${f}"
+  done
+  printf '%s' "${pl}" | grep -q 'PRIVATE KEY\|b3BlbnNzaC1rZXkt' && leaked="${leaked} key-material"
+  if [[ -z "${leaked}" ]] && printf '%s' "${pl}" | grep -qE '^[0-9]+ +fw-b .*panos'; then
+    pass 13.profile-list "probe ssh profile list shows the profiles and no secrets"
+  else
+    fail 13.profile-list "probe ssh profile list shows the profiles and no secrets" "leaked:${leaked} $(printf '%s' "${pl}" | tr '\n' ';' | cut -c1-300)"
+  fi
+  pa_ssh jump list </dev/null >"${out}/13.jump-list.txt" 2>&1
+  pa_ssh hostkey list </dev/null >"${out}/13.hostkey-list.txt" 2>&1
+}
+
 case12() {
   local before_enrol before_conn after_enrol after_conn took svc
   before_enrol="$(dc logs --no-log-prefix probe-a probe-b probe-c 2>/dev/null | grep -c '"msg":"enrolling with hub"')"
@@ -562,7 +1068,7 @@ case10() {
   sb="$(identity_secret probe-b)"
   sc="$(identity_secret probe-c)"
   local leaked="" name val
-  for name in HUB_TOKEN_FULL HUB_TOKEN_LIMITED WRONG_TOKEN ENROLL_A ENROLL_B ENROLL_C SECRET_A SECRET_B SECRET_C; do
+  for name in HUB_TOKEN_FULL HUB_TOKEN_LIMITED HUB_TOKEN_NETOPS WRONG_TOKEN ENROLL_A ENROLL_B ENROLL_C SECRET_A SECRET_B SECRET_C; do
     case "${name}" in
       SECRET_A) val="${sa}" ;; SECRET_B) val="${sb}" ;; SECRET_C) val="${sc}" ;;
       *) eval "val=\"\${${name}:-}\"" ;;
@@ -662,7 +1168,7 @@ mkdir -p "${work}" "${out}"
 
 if [[ ${reuse} -eq 1 ]]; then
   . "${work}/env"
-  export HUB_TOKEN_FULL HUB_TOKEN_LIMITED ENROLL_A ENROLL_B ENROLL_C
+  export HUB_TOKEN_FULL HUB_TOKEN_LIMITED HUB_TOKEN_NETOPS ENROLL_A ENROLL_B ENROLL_C
   # Calls already made against this stack are in the hub's log; start the count from there.
   dc logs --no-log-prefix hub 2>/dev/null | grep -c '"msg":"tool_call"' | awk '{for (i = 0; i < $1; i++) print "x"}' >"${calls}"
 else
@@ -677,6 +1183,7 @@ want 5 && case5
 want 6 && case6
 want 9 && case9
 want 11 && case11
+want 13 && case13
 want 12 && case12
 want 7 && case7
 want 8 && case8
@@ -686,7 +1193,7 @@ want x && casex
 
 # Logs for inspection, then the report.
 mkdir -p "${logs}"
-for s in hub probe-a probe-b probe-c nat dns web; do
+for s in hub probe-a probe-b probe-c nat dns web jump ${DEV_SERVICES}; do
   dc logs --no-log-prefix "${s}" >"${logs}/${s}.log" 2>&1
 done
 

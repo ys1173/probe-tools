@@ -5,6 +5,11 @@
 #   site-a    10.202.0.0/24  probe-a .11, web .21, redis .22, dns .23, banner .24, nat router .30
 #   site-b    10.203.0.0/24  probe-b .12, nat router .30
 #   isolated  10.204.0.0/24  probe-c .13, secret .40 (only probe-c can reach it)
+#   devices-b 10.205.0.0/24  jump .30, fakedev-fw .41 (probe-a is not on it: reached only through the jump)
+#
+# Device cases (run.sh case 13): fake SSH devices on site-a (.41 ios-like password, .42 ios-like key, .43 ios-like on
+# probe-a's no-touch list, .44 ios-like whose profile has the wrong password), a PAN-OS-like fake on devices-b, and an
+# OpenSSH jump host on wan .30 and devices-b .30. Their logs and keys are under .work/dev and .work/ssh-in.
 #
 # NAT case: the router DNATs 10.202.0.30:40000-40010 (tcp+udp) to probe-b 10.203.0.12 and masquerades, so a path_test
 # from probe-a to to_address 10.202.0.30 arrives at probe-b from 10.203.0.30.
@@ -34,6 +39,7 @@ services:
     environment:
       HUB_TOKEN_FULL: ${HUB_TOKEN_FULL:?run via run.sh}
       HUB_TOKEN_LIMITED: ${HUB_TOKEN_LIMITED:?run via run.sh}
+      HUB_TOKEN_NETOPS: ${HUB_TOKEN_NETOPS:?run via run.sh}
     volumes:
       - hub-data:/data
       - ./config/hub.yaml:/etc/probe-hub/hub.yaml:ro
@@ -60,7 +66,9 @@ services:
     volumes:
       - a-state:/var/lib/probe
       - ./config/probe-a.yaml:/etc/probe/probe.yaml:ro
+      - ./config/probe-a-commands.yaml:/etc/probe/commands.yaml:ro
       - ./.work/certs/ca.crt:/etc/probe/ca.crt:ro
+      - ./.work/ssh-in:/e2e-ssh:ro   # private keys for `probe ssh ... --key-file` (copied into the store)
     networks:
       wan: {ipv4_address: 10.201.0.11}
       site-a: {ipv4_address: 10.202.0.11}
@@ -143,6 +151,60 @@ services:
       site-a: {ipv4_address: 10.202.0.30}
       site-b: {ipv4_address: 10.203.0.30}
 
+  # ---- network devices (fake SSH servers, test/e2e/fakedevice) and a jump host ----
+  fakedev-ios:
+    <<: &fakedev
+      image: alpine:3.20
+      restart: "no"
+      volumes:
+        - ./.work/bin:/e2e:ro
+        - ./.work/dev:/data
+        - ./.work/ssh-in:/keys:ro
+    command: ["/e2e/fakedevice", "-mode", "exec", "-log", "/data/ios.log", "-hostkey", "/data/ios.key",
+      "-password-file", "/data/pw-ios", "-kbd", "-slow", "show clock=6", "-hostname", "sw-e2e-1"]
+    networks:
+      site-a: {ipv4_address: 10.202.0.41}
+
+  fakedev-key:
+    <<: *fakedev
+    command: ["/e2e/fakedevice", "-mode", "exec", "-log", "/data/key.log", "-hostkey", "/data/key.key",
+      "-authorized-key", "/keys/dev_key.pub", "-hostname", "sw-e2e-2"]
+    networks:
+      site-a:
+        ipv4_address: 10.202.0.42
+        aliases: [notouch-key]   # a name on probe-a's deny_hosts whose address is not in deny_cidrs
+
+  fakedev-deny:
+    <<: *fakedev
+    command: ["/e2e/fakedevice", "-mode", "exec", "-log", "/data/deny.log", "-hostkey", "/data/deny.key",
+      "-password-file", "/data/pw-ios", "-kbd", "-hostname", "sw-e2e-3"]
+    networks:
+      site-a: {ipv4_address: 10.202.0.43}
+
+  fakedev-badpw:
+    <<: *fakedev
+    command: ["/e2e/fakedevice", "-mode", "exec", "-log", "/data/badpw.log", "-hostkey", "/data/badpw.key",
+      "-password-file", "/data/pw-ios", "-kbd", "-hostname", "sw-e2e-4"]
+    networks:
+      site-a: {ipv4_address: 10.202.0.44}
+
+  fakedev-fw:
+    <<: *fakedev
+    command: ["/e2e/fakedevice", "-mode", "shell", "-user", "admin", "-log", "/data/fw.log", "-hostkey", "/data/fw.key",
+      "-password-file", "/data/pw-fw", "-hostname", "fw-e2e"]
+    networks:
+      devices-b: {ipv4_address: 10.205.0.41}
+
+  jump:
+    image: probetools-e2e/jump:latest
+    build: ./jump
+    restart: "no"
+    volumes:
+      - ./.work/ssh-in/jump_key.pub:/e2e/jump_key.pub:ro
+    networks:
+      wan: {ipv4_address: 10.201.0.30}
+      devices-b: {ipv4_address: 10.205.0.30}
+
   # ---- MCP client ----
   client:
     image: alpine:3.20
@@ -161,6 +223,8 @@ networks:
     ipam: {config: [{subnet: 10.203.0.0/24}]}
   isolated:
     ipam: {config: [{subnet: 10.204.0.0/24}]}
+  devices-b:
+    ipam: {config: [{subnet: 10.205.0.0/24}]}
 
 volumes:
   hub-data:

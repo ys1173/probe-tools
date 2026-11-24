@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"probetools/internal/protocol"
 )
 
 // auditRecord collects what one tool call did, for the single log line written when it ends. Handlers fill in what
@@ -17,7 +19,8 @@ type auditRecord struct {
 	Tool     string
 	Probes   []string
 	Target   string
-	Outcomes map[string]string // probe (or path_test step) -> "ok" or an error code
+	Command  string            // device_show only: the command line, which is not secret; never its output
+	Outcomes map[string]string // probe (or path_test step) -> "ok" or an error code; for device_show the result's outcome
 	Verdict  string
 	Error    string // set when the call as a whole failed
 }
@@ -45,6 +48,9 @@ func (h *hub) audit(ctx context.Context, rec *auditRecord, d time.Duration) {
 		slog.String("target", rec.Target),
 		slog.Any("outcomes", rec.Outcomes),
 		slog.Int64("duration_ms", d.Milliseconds()),
+	}
+	if rec.Command != "" {
+		attrs = append(attrs, slog.String("command", truncate(rec.Command, protocol.MaxCommandLength)))
 	}
 	if rec.Verdict != "" {
 		attrs = append(attrs, slog.String("verdict", rec.Verdict))

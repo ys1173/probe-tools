@@ -554,3 +554,44 @@ func TestRateLimitConcurrentJob(t *testing.T) {
 		t.Fatalf("one job charged twice: %v", err)
 	}
 }
+
+func TestDenyHosts(t *testing.T) {
+	p := newPolicy(t, Config{Mode: ModeOpen, DenyHosts: []string{"public.example", "*.corp.example"}})
+	cases := map[string]string{
+		"public.example":     protocol.CodeDenied,
+		"PUBLIC.example.":    protocol.CodeDenied,
+		"good.corp.example":  protocol.CodeDenied,
+		"corp.example":       protocol.CodeUnresolved, // the pattern covers names below corp.example, not corp.example
+		"203.0.113.7":        "",                      // a name entry does not cover the address asked for directly
+		"mixed.corp.example": protocol.CodeDenied,
+	}
+	for target, want := range cases {
+		_, err := p.Resolve(context.Background(), target, "")
+		if code(err) != want {
+			t.Errorf("%s: got %q, want %q (%v)", target, code(err), want, err)
+		}
+	}
+	if _, err := New(Config{Mode: ModeOpen, DenyHosts: []string{"bad name"}}); err == nil {
+		t.Fatal("a malformed deny_hosts entry must be refused")
+	}
+	if got := p.Summary().DenyHosts; len(got) != 2 {
+		t.Fatalf("summary deny_hosts: %v", got)
+	}
+}
+
+func TestZonesRefusedAndStripped(t *testing.T) {
+	p := newPolicy(t, Config{Mode: ModeOpen})
+	inj := "fd00:1::5%z\tssh-ed25519\tAAAA\n10.1.2.3\tssh-ed25519\tAAAA\tx"
+	for _, target := range []string{"fd00:1::5%x", "[fd00:1::5%x]", "::ffff:10.1.2.3%x", "10.1.2.3%x", "fe80::1%eth0", inj} {
+		addrs, perr := p.Resolve(context.Background(), target, "")
+		if code(perr) != protocol.CodeInvalidParams {
+			t.Errorf("%q: got %v %v, want invalid_params", target, addrs, perr)
+		}
+	}
+	// A resolver's answer never keeps a zone.
+	p.Resolver = fakeResolver{"zoned.example": {netip.MustParseAddr("fd00:1::5%eth0")}}
+	addrs, perr := p.Resolve(context.Background(), "zoned.example", "")
+	if perr != nil || len(addrs) != 1 || addrs[0].Zone() != "" || addrs[0] != netip.MustParseAddr("fd00:1::5") {
+		t.Fatalf("zoned answer: %v %v", addrs, perr)
+	}
+}

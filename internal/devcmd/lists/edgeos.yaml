@@ -1,0 +1,46 @@
+# Ubiquiti EdgeOS (EdgeRouter), Vyatta-derived operational mode: interface, routing and neighbour state only.
+# Ubiquiti's own articles were cited from their published text; where Ubiquiti does not document a command, the
+# VyOS documentation (same Vyatta operational-mode lineage) is the source, as noted per group.
+# Left out on purpose: show configuration and show system commit (keys, communities, secrets), show tech-support,
+# show log (and log tail, which streams), show interfaces ... capture (streams packets), monitor (streams), show dhcp
+# leases (client data), show ubnt discover (sends probes), show vrrp and show vrrp detail (may show authentication
+# text; summary only, as on IOS and NX-OS), and anything without a source: show system uptime, show system memory,
+# show hardware cpu, show interfaces switch, show bridge ... macs.
+# Placeholders (<IF>, <V4>, ...) are defined in builtin.go.
+groups:
+  - source: Ubiquiti help center, EdgeRouter - How to Find the Base MAC Address (show version, show interfaces
+      ethernet detail), EdgeRouter - Displaying the CPU Temperature (show hardware temperature), EdgeRouter - VLAN-Aware
+      Switch (show interfaces) (help.uisp.com/hc/en-us/articles/22591166862743, 22591244185111, 22591227837079)
+    allow:
+      - '^show version$'
+      - '^show hardware temperature$'
+      - '^show interfaces$'
+      - '^show interfaces ethernet(?: detail)?$'
+
+  - source: VyOS 1.3 documentation, Ethernet interfaces (show interfaces ethernet <name> [physical]) and
+      troubleshooting (show interfaces detail) (docs.vyos.io/en/equuleus/configuration/interfaces/ethernet.html)
+    allow:
+      - '^show interfaces detail$'
+      - '^show interfaces ethernet <IF>(?: physical)?$'
+
+  - source: Ubiquiti help center, EdgeRouter - OSPF Routing (show ip route ospf, show ip ospf neighbor), EdgeRouter -
+      Border Gateway Protocol (show ip bgp summary), EdgeRouter - VRRP (show vrrp summary)
+      (help.uisp.com/hc/en-us/articles/22591186414615, 22591213900823, 22591202162455); VyOS 1.3 documentation, OSPF
+      and BGP (show ip ospf neighbor detail, show ip bgp neighbors ... routes) and rolling, IP (show ip route
+      <subnet>, summary)
+    allow:
+      - '^show ip route(?: <V4>| <V4P>| summary| connected| static| kernel| bgp| ospf| rip)?$'
+      - '^show ip ospf neighbor(?: detail| <V4>)?$'
+      - '^show ip bgp summary$'
+      - '^show ip bgp neighbors(?: <V4>(?: advertised-routes| received-routes| routes)?)?$'
+      - '^show vrrp summary$'
+
+  - source: VyOS 1.2 documentation, operational command tree and IPv6 (show arp, show ipv6 route, show ipv6
+      neighbors, show ntp) (docs.vyos.io/en/1.2/commandtree/operationmode.html,
+      docs.vyos.io/en/1.2/configuration/system/ipv6.html); VyOS 1.3, LLDP (show lldp neighbors)
+    allow:
+      - '^show arp$'
+      - '^show ipv6 route$'
+      - '^show ipv6 neighbors$'
+      - '^show ntp$'
+      - '^show lldp neighbors(?: detail| interface <IF>)?$'

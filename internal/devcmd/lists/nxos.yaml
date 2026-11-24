@@ -1,0 +1,70 @@
+# Cisco NX-OS (Nexus 9000): physical and operational state only.
+# Left out on purpose: running/startup configuration, users, SNMP, AAA, logging, file systems, tech-support, show ntp
+# without peer-status (authentication-keys and trusted-keys sit beside it), show vrrp (plain and detail) and show
+# hsrp detail (may show authentication text), show transceiver sprom, show vlan brief and show ip bgp summary (not in
+# the 10.5 show command reference; use show bgp ipv4 unicast summary).
+# Placeholders (<IF>, <V4>, ...) are defined in builtin.go.
+# SC = Cisco Nexus 9000 Series NX-OS Show Commands, 10.5(x):
+#   cisco.com/c/en/us/td/docs/dcn/nx-os/nexus9000/105x/command-reference/show/b_n9k_show_commands_1051/
+groups:
+  - source: SC (show version, show clock, show inventory, show module, show environment, show system resources, show
+      system uptime, show system reset-reason, show processes cpu, show ntp peer-status, show vpc)
+    allow:
+      - '^show version$'
+      - '^show clock(?: detail)?$'
+      - '^show inventory(?: chassis| fans| power_supply| module(?: <NUM>)?| all)?$'
+      - '^show module(?: <NUM>| uptime| fabric(?: <NUM>)?)?$'
+      - '^show environment(?: fan(?: detail)?| power(?: detail)?| temperature)?$'
+      - '^show system resources$'
+      - '^show system uptime$'
+      - '^show system reset-reason(?: module <NUM>)?$'
+      - '^show processes cpu(?: sort| history| module <NUM>)?$'
+      - '^show ntp peer-status$'
+      - '^show vpc(?: brief)?$'
+
+  - source: SC (show interface, show interface brief, status, counters, description, transceiver; show ip interface)
+    allow:
+      - '^show interface(?: <IF>)?(?: quick)?$'
+      - '^show interface(?: <IF>)? brief$'
+      - '^show interface status(?: down| inactive| up| module <NUM>)?$'
+      - '^show interface(?: <IF>)? counters(?: errors)?(?: non-zero)?$'
+      - '^show interface(?: <IF>)? description$'
+      - '^show interface(?: <IF>)? transceiver(?: details| calibrations)?$'
+      - '^show ip interface brief(?: vrf <VRF>)?$'
+      - '^show ip interface <IF>(?: vrf <VRF>)?$'
+
+  - source: SC (show ip route, show ipv6 route, show ip arp, show ipv6 neighbor, show mac address-table)
+    allow:
+      - '^show ip route(?: <V4>| <V4P>(?: longer-prefixes)?| summary| detail| bgp| ospf| static| direct| eigrp| isis)?(?: vrf <VRF>)?$'
+      - '^show ipv6 route(?: <V6>| <V6P>| summary)?(?: vrf <VRF>)?$'
+      - '^show ip arp(?: <V4>| <IF>| summary| detail| static)?(?: vrf <VRF>)?$'
+      - '^show ipv6 neighbor(?: <IF>| <V6>| detail| summary)?(?: vrf <VRF>)?$'
+      - '^show mac address-table(?: static| dynamic)?(?: address <MAC>| interface <IF>| vlan <VLAN>)?$'
+      - '^show mac address-table count(?: dynamic| static)?(?: vlan <VLAN>)?$'
+
+  - source: SC (show lldp neighbors, show cdp neighbors)
+    allow:
+      - '^show lldp neighbors(?: interface <IF>)?(?: detail)?$'
+      - '^show cdp neighbors(?: interface <IF>)?(?: detail)?$'
+
+  - source: SC (show ip ospf neighbors, show bgp ... summary, show isis adjacency); NX-OS Unicast Routing
+      Configuration Guide 10.5(x), EIGRP chapter (show ip eigrp neighbors)
+    allow:
+      - '^show ip ospf(?: <VRF>)? neighbors(?: <IF>)?(?: detail| summary)?(?: vrf <VRF>)?$'
+      - '^show bgp(?: vrf <VRF>)? (?:ipv4|ipv6) (?:unicast|multicast) summary$'
+      - '^show bgp(?: vrf <VRF>)? all summary$'
+      - '^show ip eigrp(?: <VRF>)? neighbors(?: <IF>)?(?: detail)?$'
+      - '^show isis(?: <VRF>)? adjacency(?: <IF>)?(?: detail| summary)?(?: vrf <VRF>)?$'
+
+  - source: SC (show vlan, show spanning-tree, show port-channel summary, show lacp neighbor)
+    allow:
+      - '^show vlan(?: id <VLANS>)?$'
+      - '^show spanning-tree(?: vlan <VLANS>)?(?: summary| blockedports)?$'
+      - '^show port-channel summary(?: interface <IF>)?$'
+      - '^show lacp neighbor(?: interface <IF>)?$'
+
+  - source: SC (show vrrp, show hsrp). Summary and brief forms only.
+    allow:
+      - '^show vrrp summary$'
+      - '^show hsrp(?: interface <IF>)?(?: group <NUM>)? brief$'
+      - '^show hsrp summary$'

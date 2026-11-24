@@ -60,6 +60,9 @@ func ClientFromContext(ctx context.Context) (hubapi.Client, bool) {
 
 // New returns the streamable-HTTP MCP handler. It refuses to start on a client configuration that would be unsafe or
 // ambiguous: a missing or short token, a token or name used twice, or a scope it cannot parse.
+//
+// A client's tools list names tools, or "*" for every tool except protocol.DeviceChecks (device_show, device_commands),
+// which log in to network devices and so are available only to a client that names them.
 func New(router hubapi.Router, clients []hubapi.Client, logger *slog.Logger, lookupEnv func(string) (string, bool)) (http.Handler, error) {
 	h, err := newHub(router, clients, logger, lookupEnv, time.Duration(protocol.HubCallBudgetMS)*time.Millisecond)
 	if err != nil {

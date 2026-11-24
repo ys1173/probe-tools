@@ -58,7 +58,22 @@ type Hello struct {
 	Checks       []string        `json:"checks"`       // check names this probe will run
 	Capabilities map[string]bool `json:"capabilities"` // e.g. "raw_icmp": false when the probe lacks NET_RAW
 	Policy       PolicySummary   `json:"policy"`
-	ListenPorts  string          `json:"listen_ports"` // the range path_test may open on this probe, e.g. "40000-40100"; empty means none
+	ListenPorts  string          `json:"listen_ports"`  // the range path_test may open on this probe, e.g. "40000-40100"; empty means none
+	SSH          *SSHSummary     `json:"ssh,omitempty"` // present when device access over SSH is enabled on this probe
+}
+
+// SSHSummary tells agents which device ranges this probe can log in to and as which platform. It carries no user names,
+// passwords or keys. Agents use it to pick the probe for a device; the probe enforces its own profiles whatever it says.
+type SSHSummary struct {
+	Profiles []SSHProfileSummary `json:"profiles"`
+}
+
+// SSHProfileSummary is one credential profile without its secrets.
+type SSHProfileSummary struct {
+	Name     string   `json:"name"`
+	CIDRs    []string `json:"cidrs"`
+	Platform string   `json:"platform"`
+	Jump     string   `json:"jump,omitempty"` // name of the jump host the profile goes through, if any
 }
 
 // PolicySummary is what a probe reports of its local target policy. It is information for agents, not enforcement: the
@@ -68,6 +83,7 @@ type PolicySummary struct {
 	AllowCIDRs []string `json:"allow_cidrs,omitempty"`
 	AllowHosts []string `json:"allow_hosts,omitempty"`
 	DenyCIDRs  []string `json:"deny_cidrs,omitempty"`
+	DenyHosts  []string `json:"deny_hosts,omitempty"`
 }
 
 // Welcome confirms the session.

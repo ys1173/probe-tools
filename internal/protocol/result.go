@@ -11,15 +11,16 @@ import (
 // Error codes. A check that ran and found a problem (a host that does not answer, a port that is closed) is not an error:
 // that is its result. An Error means the check could not give an answer.
 const (
-	CodeDenied        = "denied"         // the probe's target policy refused the target, or an address it resolved to
-	CodeInvalidParams = "invalid_params" // parameters failed validation
-	CodeUnavailable   = "unavailable"    // the probe cannot run this check, e.g. no NET_RAW for raw ICMP
-	CodeBusy          = "busy"           // a concurrency or rate limit was reached; try again later
-	CodeTimeout       = "timeout"        // the job's deadline passed before any result
-	CodeCancelled     = "cancelled"      // the hub cancelled the job
-	CodeUnresolved    = "unresolved"     // the target name did not resolve (diagnose reports this as a DNS finding)
-	CodeNotFound      = "not_found"      // e.g. an unknown check or listen_id
-	CodeInternal      = "internal"       // a bug or an unexpected failure
+	CodeDenied        = "denied"              // the probe's target policy refused the target, or an address it resolved to
+	CodeInvalidParams = "invalid_params"      // parameters failed validation
+	CodeUnavailable   = "unavailable"         // the probe cannot run this check, e.g. no NET_RAW for raw ICMP
+	CodeBusy          = "busy"                // a concurrency or rate limit was reached; try again later
+	CodeTimeout       = "timeout"             // the job's deadline passed before any result
+	CodeCancelled     = "cancelled"           // the hub cancelled the job
+	CodeUnresolved    = "unresolved"          // the target name did not resolve (diagnose reports this as a DNS finding)
+	CodeNotFound      = "not_found"           // e.g. an unknown check or listen_id
+	CodeNotAllowed    = "command_not_allowed" // device_show: the command is not in this probe's list for the device's platform
+	CodeInternal      = "internal"            // a bug or an unexpected failure
 
 	// Hub-side codes, set when the hub could not get an answer from a probe.
 	CodeProbeOffline = "probe_offline" // the probe is not connected; jobs are never queued for later

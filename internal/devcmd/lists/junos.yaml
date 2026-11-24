@@ -1,0 +1,67 @@
+# Juniper Junos: physical and operational state only.
+# Left out on purpose: show configuration (and every | display), users, SNMP, AAA, system storage and file listings,
+# logs (show log), request support information, show route longer (not documented), show chassis routing-engine
+# hard-disk-test, show vrrp without brief or summary (detail and extensive may show authentication text; brief and
+# summary only, as on IOS and NX-OS).
+# Placeholders (<IF>, <V4>, ...) are defined in builtin.go.
+# J = Junos CLI Reference, operational commands (juniper.net/documentation, now served at
+#   networkingdocs.hpe.com/documentation/us/en/software/junos/cli-reference/topics/ref/command/<command>.html)
+groups:
+  - source: J (show version, show system uptime, show system alarms, show system processes, show chassis alarms,
+      show chassis hardware, show chassis environment, show chassis fpc, show chassis routing-engine, show
+      virtual-chassis, show ntp associations, show ntp status)
+    allow:
+      - '^show version(?: brief| detail)?$'
+      - '^show system uptime$'
+      - '^show system alarms$'
+      - '^show system processes(?: brief| detail| extensive| summary)?$'
+      - '^show chassis alarms$'
+      - '^show chassis hardware(?: detail| extensive)?(?: clei-models| models)?$'
+      - '^show chassis environment(?: cb <NUM>| fpc <NUM>| pem <NUM>| routing-engine <NUM>| fan <NUM>| psm <NUM>)?$'
+      - '^show chassis fpc(?: detail(?: <NUM>)?| pic-status(?: <NUM>)?)?$'
+      - '^show chassis routing-engine(?: <NUM>)?$'
+      - '^show virtual-chassis(?: status)?$'
+      - '^show ntp (?:associations|status)(?: no-resolve)?$'
+
+  - source: J (show interfaces gigabit-ethernet, aggregated-ethernet, terse, extensive, detail, media, statistics,
+      descriptions; show interfaces diagnostics optics)
+    allow:
+      - '^show interfaces(?: <IF>)?(?: brief| detail| extensive| terse)?$'
+      - '^show interfaces(?: <IF>)? (?:descriptions|media)$'
+      - '^show interfaces statistics(?: <IF>)?(?: detail| extensive)?$'
+      - '^show interfaces diagnostics optics(?: <IF>)?$'
+
+  - source: J (show route, show route exact, best, terse, detail, extensive, table, protocol, summary, show route
+      forwarding-table)
+    allow:
+      - '^show route(?: <PFX>)?(?: table <NAME>)?$'
+      - '^show route (?:brief|detail|extensive|terse)(?: <PFX>)?$'
+      - '^show route (?:exact|best) <PFX>(?: brief| detail| extensive| terse)?$'
+      - '^show route table <NAME>(?: brief| detail| extensive| terse)?$'
+      - '^show route protocol (?:bgp|ospf|ospf3|isis|static|direct|local|aggregate|rip)(?: brief| detail| extensive| terse)?$'
+      - '^show route summary(?: table <NAME>)?$'
+      - '^show route forwarding-table(?: detail| extensive| summary)?(?: destination <PFX>)?(?: table <NAME>)?$'
+
+  - source: J (show arp, show ipv6 neighbors, show ethernet-switching table, show lldp neighbors)
+    allow:
+      - '^show arp(?: interface <IF>)?(?: no-resolve)?$'
+      - '^show ipv6 neighbors(?: interface <IF>)?$'
+      - '^show ethernet-switching table(?: brief| count| detail| extensive| summary)?(?: interface <IF>| vlan-name <NAME>| vlan-id <VLAN>)?$'
+      - '^show lldp neighbors(?: interface <IF>)?(?: detail)?$'
+
+  - source: J (show ospf neighbor, show ospf interface, show bgp summary, show bgp neighbor, show isis adjacency)
+    allow:
+      - '^show (?:ospf|ospf3) neighbor(?: brief| detail| extensive)?(?: instance <NAME>)?$'
+      - '^show (?:ospf|ospf3) interface(?: brief| detail| extensive)?(?: <IF>)?(?: instance <NAME>)?$'
+      - '^show bgp summary(?: group <NAME>)?(?: instance <NAME>)?$'
+      - '^show bgp neighbor(?: instance <NAME>)?(?: <V4>| <V6>)?$'
+      - '^show isis adjacency(?: brief| detail| extensive)?(?: instance <NAME>)?$'
+
+  - source: J (show spanning-tree bridge, show spanning-tree interface, show lacp interfaces, show vrrp brief and
+      summary); Junos 13.2 reference, show vlans (networkingdocs.hpe.com/documentation/en_US/junos13.2/topics/reference/command-summary/show-vlans-l2.html)
+    allow:
+      - '^show vlans(?: brief| detail| extensive)?$'
+      - '^show vlans <NAME>(?: brief| detail| extensive)?$'
+      - '^show spanning-tree (?:bridge|interface)(?: brief| detail)?(?: vlan-id <VLAN>| msti <NUM>)?$'
+      - '^show lacp interfaces(?: <IF>)?(?: extensive)?$'
+      - '^show vrrp (?:brief|summary)(?: interface <IF>)?$'

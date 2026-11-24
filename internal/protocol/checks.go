@@ -19,9 +19,12 @@ const (
 	CheckHTTPCheck   = "http_check"
 	CheckDiagnose    = "diagnose"
 
-	CheckListenStart   = "listen_start"   // internal: path_test's receiving side opens a port
-	CheckListenCollect = "listen_collect" // internal: path_test's receiving side reports what arrived
-	CheckPathSend      = "path_send"      // internal: path_test's sending side connects and sends the fixed payload with the nonce
+	CheckListenStart    = "listen_start"    // internal: path_test's receiving side opens a port
+	CheckListenCollect  = "listen_collect"  // internal: path_test's receiving side reports what arrived
+	CheckDeviceShow     = "device_show"     // run one allowed read-only command on a network device over SSH
+	CheckDeviceCommands = "device_commands" // list the commands device_show allows, per platform
+
+	CheckPathSend = "path_send" // internal: path_test's sending side connects and sends the fixed payload with the nonce
 )
 
 // Time budgets. A caller such as an agent platform may give a tool call 60 s; the hub answers well within that.
@@ -496,16 +499,147 @@ type PathSendResult struct {
 	ConnectMS int64  `json:"connect_ms,omitempty"`
 }
 
+// Device platforms device_show supports. IOS covers IOS and IOS-XE.
+const (
+	PlatformIOS      = "ios"
+	PlatformNXOS     = "nxos"
+	PlatformJunos    = "junos"
+	PlatformEOS      = "eos"
+	PlatformPANOS    = "panos"
+	PlatformFortiOS  = "fortios"
+	PlatformEdgeOS   = "edgeos"
+	PlatformRouterOS = "routeros"
+)
+
+// Platforms lists every supported platform.
+var Platforms = []string{PlatformIOS, PlatformNXOS, PlatformJunos, PlatformEOS, PlatformPANOS, PlatformFortiOS,
+	PlatformEdgeOS, PlatformRouterOS}
+
+// MaxCommandLength bounds a device command.
+const MaxCommandLength = 256
+
+// DeviceShowParams runs one command on one device. The probe picks the credentials and platform from its local SSH
+// profiles by the device's resolved address; the agent never chooses them. The command must match the probe's list of
+// allowed commands for that platform.
+type DeviceShowParams struct {
+	Device    string `json:"device" jsonschema:"the device's IP address, or a name the probe resolves"`
+	Command   string `json:"command" jsonschema:"one read-only command written out in full, e.g. show interfaces GigabitEthernet1/0/1; device_commands lists what is allowed"`
+	TimeoutMS int    `json:"timeout_ms,omitempty" jsonschema:"whole login and command, 2000 to 35000, default 20000"`
+}
+
+func (p *DeviceShowParams) Normalize() *Error {
+	p.Device = strings.TrimSpace(p.Device)
+	if !validDevice(p.Device) {
+		return Errorf(CodeInvalidParams, "device must be an IP address or a host name: letters, digits and . : _ -, at most 253 characters")
+	}
+	// Whitespace is collapsed so the command is matched in one canonical form; doing it twice changes nothing.
+	p.Command = strings.Join(strings.Fields(p.Command), " ")
+	if p.Command == "" || len(p.Command) > MaxCommandLength {
+		return Errorf(CodeInvalidParams, "command is required and at most %d characters", MaxCommandLength)
+	}
+	for i := 0; i < len(p.Command); i++ {
+		if c := p.Command[i]; c < 0x20 || c > 0x7e {
+			return Errorf(CodeInvalidParams, "command must be printable ASCII")
+		}
+	}
+	p.TimeoutMS = clampDefault(p.TimeoutMS, 2000, 35000, 20000)
+	return nil
+}
+
+// DeviceShowResult is one command's outcome. Outcome is "ok" (the command ran; its exit status and output follow),
+// "auth_failed" (never retried, so a wrong password cannot lock the account; also answered without connecting while
+// the profile or jump host is in its cool-down after a failed login), "host_key_changed" (refused), "host_key_unknown"
+// (a password profile met a device whose key is not recorded: nothing was sent and nothing recorded; HostKey holds
+// the fingerprint for the operator to confirm with `probe ssh hostkey learn`), "refused", "timeout", "unreachable",
+// "command_error" (the device rejected the command) or "error".
+type DeviceShowResult struct {
+	Device          string     `json:"device"`
+	Address         string     `json:"address"`
+	Platform        string     `json:"platform"`
+	Profile         string     `json:"profile"`
+	Jump            string     `json:"jump,omitempty"`
+	Command         string     `json:"command"`
+	Outcome         string     `json:"outcome"`
+	Detail          string     `json:"detail,omitempty"`
+	ExitStatus      *int       `json:"exit_status,omitempty"`
+	Output          *Untrusted `json:"output,omitempty"`
+	OutputBytes     int        `json:"output_bytes"`
+	Truncated       bool       `json:"truncated,omitempty"`
+	HostKey         string     `json:"host_key,omitempty"`           // SHA256 fingerprint of the device's host key
+	HostKeyFirstUse bool       `json:"host_key_first_use,omitempty"` // the key was not known before and has now been recorded
+	DurationMS      int64      `json:"duration_ms"`
+}
+
+// DeviceCommandsParams lists allowed commands, for one platform or all.
+type DeviceCommandsParams struct {
+	Platform string `json:"platform,omitempty" jsonschema:"ios, nxos, junos, eos, panos, fortios, edgeos or routeros; empty lists all"`
+}
+
+func (p *DeviceCommandsParams) Normalize() *Error {
+	p.Platform = strings.ToLower(strings.TrimSpace(p.Platform))
+	if p.Platform == "" {
+		return nil
+	}
+	for _, pl := range Platforms {
+		if pl == p.Platform {
+			return nil
+		}
+	}
+	return Errorf(CodeInvalidParams, "platform %q is not supported", p.Platform)
+}
+
+// DeviceCommandsResult is what device_show will accept on this probe.
+type DeviceCommandsResult struct {
+	Platforms []PlatformCommands  `json:"platforms"`
+	Profiles  []SSHProfileSummary `json:"profiles"`
+}
+
+// PlatformCommands is one platform's effective list: the built-in patterns plus this probe's local additions, minus its
+// local denials. Patterns are anchored regular expressions over the whole command.
+type PlatformCommands struct {
+	Platform string   `json:"platform"`
+	Allow    []string `json:"allow"`
+	Deny     []string `json:"deny,omitempty"`
+	Local    bool     `json:"local_changes,omitempty"` // this probe adds to or removes from the built-in list
+}
+
 // PublicChecks are the checks the hub offers as tools, in the order it lists them.
 var PublicChecks = []string{CheckDiagnose, CheckPing, CheckTraceroute, CheckPathMTU, CheckDNSLookup, CheckTCPConnect,
-	CheckTCPTemplate, CheckUDPProbe, CheckTLSCheck, CheckHTTPCheck, CheckProbeInfo}
+	CheckTCPTemplate, CheckUDPProbe, CheckTLSCheck, CheckHTTPCheck, CheckProbeInfo, CheckDeviceShow, CheckDeviceCommands}
 
+// DeviceChecks are the public checks that log in to devices. A client's tools: ["*"] does not include them; a client
+// must name them explicitly.
+var DeviceChecks = []string{CheckDeviceShow, CheckDeviceCommands}
+
+// needTarget accepts a host name or an IP address: letters, digits and . : _ - (an IPv6 address may be written in
+// brackets). Anything else, a zone's % or whitespace included, is refused here, before the policy sees it.
 func needTarget(t string) *Error {
 	t = strings.TrimSpace(t)
-	if t == "" || len(t) > 253 || strings.ContainsAny(t, " /\\@?#") {
-		return Errorf(CodeInvalidParams, "target must be a host name or IP address, at most 253 characters")
+	if inner, ok := strings.CutPrefix(t, "["); ok {
+		if inner, ok = strings.CutSuffix(inner, "]"); !ok {
+			inner = "" // an opening bracket without its closing one
+		}
+		t = inner
+	}
+	if !validDevice(t) {
+		return Errorf(CodeInvalidParams, "target must be a host name or IP address (letters, digits and . : _ -), at most 253 characters")
 	}
 	return nil
+}
+
+// validDevice reports whether s is 1 to 253 of A-Z a-z 0-9 . : _ -, the characters of a host name or an IP address
+// without a zone.
+func validDevice(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '.' || c == ':' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func checkPort(port int, zeroOK bool) *Error {

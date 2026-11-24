@@ -1,0 +1,75 @@
+# Arista EOS: physical and operational state only.
+# Left out on purpose: running/startup configuration, users, SNMP, AAA, logging, file systems, tech-support, bash,
+# show processes top (refreshes until stopped; "once" is not in the manual), show vrrp without brief, show uptime and
+# show bgp summary (not in the manual).
+# Placeholders (<IF>, <V4>, ...) are defined in builtin.go.
+# A = Arista EOS 4.37.0F User Manual, arista.com/en/um-eos/<chapter>
+groups:
+  - source: A eos-command-line-interface-cli (show version); eos-switch-administration-commands (show clock, show
+      ntp); eos-session-management-commands (show inventory); eos-environment-commands; eos-ipv4 (show hardware
+      capacity); eos-multi-chassis-link-aggregation (show mlag)
+    allow:
+      - '^show version(?: detail)?$'
+      - '^show clock$'
+      - '^show inventory$'
+      - '^show system environment (?:all|cooling(?: detail)?|power(?: budget)?)$'
+      - '^show environment power(?: detail)?$'
+      - '^show environment temperature(?: detail)?$'
+      - '^show hardware capacity$'
+      - '^show ntp (?:status|associations)$'
+      - '^show mlag(?: detail)?$'
+
+  - source: A eos-data-transfer and eos-ethernet-ports (show interfaces, description, status, counters, phy,
+      transceiver); eos-ipv4 (show ip interface brief)
+    allow:
+      - '^show interfaces(?: <IF>)?$'
+      - '^show interfaces(?: <IF>)? description$'
+      - '^show interfaces(?: <IF>)? status(?: connected| notconnect| disabled| errdisabled)?$'
+      - '^show interfaces(?: <IF>)? counters(?: incoming| errors| rates| queue| discards)?$'
+      - '^show interfaces(?: <IF>)? phy(?: detail)?$'
+      - '^show interfaces(?: <IF>)? transceiver(?: properties| channels| csv| detail)?$'
+      - '^show ip interface(?: <IF>)?(?: vrf <VRF>)? brief$'
+
+  - source: A eos-ipv4 (show ip route, show ip arp, show arp); eos-ipv6 (show ipv6 route, show ipv6 neighbors);
+      eos-data-transfer (show mac address-table)
+    allow:
+      - '^show ip route(?: vrf <VRF>)?(?: <V4>| <V4P>)?(?: aggregate| bgp| connected| isis| kernel| ospf| rip| static)?(?: detail)?(?: longer-prefixes)?$'
+      - '^show ip route(?: vrf <VRF>)? summary$'
+      - '^show ipv6 route(?: <V6>| <V6P>)?(?: aggregate| bgp| connected| isis| kernel| ospf| static)?(?: detail)?$'
+      - '^show ipv6 route summary$'
+      - '^show (?:ip arp|arp)(?: vrf <VRF>)?(?: <V4>| interface <IF>| <MAC>)?$'
+      - '^show ipv6 neighbors(?: <IF>)?(?: <V6>)?(?: summary)?$'
+      - '^show mac address-table(?: configured| dynamic| static| unicast)?(?: address <MAC>)?(?: interface <IF>)?(?: vlan <VLAN>)?$'
+      - '^show mac address-table count(?: vlan <VLAN>)?$'
+
+  - source: A eos-link-layer-discovery-protocol (show lldp neighbors; the manual spells the level "detailed", the
+      CLI also takes "detail")
+    allow:
+      - '^show lldp neighbors(?: <IF>)?(?: detail| detailed)?$'
+
+  - source: A eos-open-shortest-path-first-version-2 (show ip ospf neighbor); eos-border-gateway-protocol-bgp (show
+      ip bgp summary, show ipv6 bgp summary, show ip bgp neighbors); eos-is-is (show isis neighbors)
+    allow:
+      - '^show ip ospf(?: <NUM>)? neighbor(?: <IF>)?(?: <V4>)?(?: detail)?(?: vrf <VRF>)?$'
+      - '^show ip ospf(?: <NUM>)? neighbor summary(?: vrf <VRF>)?$'
+      - '^show (?:ip|ipv6) bgp summary(?: vrf <VRF>)?$'
+      - '^show ip bgp neighbors(?: <V4>| <V6>)?(?: vrf <VRF>)?$'
+      - '^show isis neighbors(?: detail)?(?: vrf <VRF>)?$'
+
+  - source: A eos-virtual-lans-vlans (show vlan); eos-spanning-tree-protocol (show spanning-tree);
+      eos-port-channels-and-lacp (show port-channel, show lacp)
+    allow:
+      - '^show vlan(?: id <VLANS>| <VLANS>)?$'
+      - '^show vlan brief count$'
+      - '^show vlan(?: id <VLANS>)? trunk$'
+      - '^show spanning-tree(?: vlan <VLANS>)?(?: detail)?$'
+      - '^show spanning-tree (?:blockedports|root(?: detail)?|instance(?: detail)?|interface|counters)$'
+      - '^show port-channel(?: <NUM>)?(?: active-ports| all-ports)?(?: brief| detailed)?$'
+      - '^show port-channel dense$'
+      - '^show lacp(?: <NUM>)? peer(?: all-ports)?(?: brief| detailed)?$'
+      - '^show lacp(?: <NUM>)? (?:aggregates|counters|internal)(?: brief| detailed)?$'
+      - '^show lacp sys-id$'
+
+  - source: A eos-vrrp-and-varp (show vrrp). Brief forms only.
+    allow:
+      - '^show vrrp(?: <IF>(?: <NUM>)?)? brief(?: all)?$'

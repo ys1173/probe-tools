@@ -169,8 +169,8 @@ func tcpTemplate(ctx context.Context, env *check.Env, raw json.RawMessage) (any,
 }
 
 // httpHostHeader builds the Host header for http_head: host_header as given, or the target with the port when it is not
-// the scheme's default. needTarget does not exclude control characters in a target, so the result is checked here
-// before it is written to the wire.
+// the scheme's default. The result is checked here again before it is written to the wire, so the request stays safe
+// even if target validation elsewhere changes.
 func httpHostHeader(p *protocol.TCPTemplateParams) (string, *protocol.Error) {
 	host := p.HostHeader
 	if host == "" {

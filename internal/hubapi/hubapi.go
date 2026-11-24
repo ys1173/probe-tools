@@ -27,6 +27,7 @@ type ProbeStatus struct {
 	Capabilities map[string]bool        `json:"capabilities,omitempty"`
 	Policy       protocol.PolicySummary `json:"policy"`
 	ListenPorts  string                 `json:"listen_ports,omitempty"`
+	SSH          *protocol.SSHSummary   `json:"ssh,omitempty"`
 }
 
 // Router runs checks on probes. It never queues: a probe that is offline answers CodeProbeOffline at once.
@@ -48,5 +49,5 @@ type Client struct {
 	Name     string   `yaml:"name"`
 	TokenEnv string   `yaml:"token_env"` // environment variable holding the client's bearer token
 	Probes   []string `yaml:"probes"`    // probe name globs ("syd-*"), "site:<site>", or "*"; empty allows none
-	Tools    []string `yaml:"tools"`     // tool names, or "*"; empty allows none
+	Tools    []string `yaml:"tools"`     // tool names, or "*" for every tool except the device tools (device_show, device_commands), which must be named; empty allows none
 }

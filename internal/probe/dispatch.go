@@ -300,7 +300,7 @@ func (d *dispatcher) runNested(ctx context.Context, name string, params any) (v 
 }
 
 // logTarget names what a job is aimed at, for its log line: the "target" parameter, else the host of "url", else
-// "name", else "address". path_test's receiving side is aimed at nothing.
+// "name", else "address", else "device". path_test's receiving side is aimed at nothing.
 func logTarget(checkName string, params json.RawMessage) string {
 	if checkName == protocol.CheckListenStart || checkName == protocol.CheckListenCollect {
 		return ""
@@ -309,7 +309,7 @@ func logTarget(checkName string, params json.RawMessage) string {
 	if len(params) == 0 || json.Unmarshal(params, &m) != nil {
 		return ""
 	}
-	for _, field := range []string{"target", "url", "name", "address"} {
+	for _, field := range []string{"target", "url", "name", "address", "device"} {
 		raw, ok := m[field]
 		if !ok {
 			continue

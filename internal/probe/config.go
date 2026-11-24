@@ -15,11 +15,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"probetools/internal/devcmd"
 	"probetools/internal/policy"
+	"probetools/internal/sshcfg"
 )
+
+// sshPlatformError refuses ssh.enabled on a build whose SSH store has no protections (replaced in tests).
+var sshPlatformError = sshcfg.PlatformError
 
 // Defaults for settings the file may leave out.
 const (
@@ -28,12 +34,23 @@ const (
 	DefaultEnrollTokenEnv  = "PROBE_ENROLL_TOKEN"
 	DefaultMaxConcurrent   = 4
 	DefaultPerTargetPerMin = 30
+
+	DefaultSSHMaxOutputBytes   = 262144
+	DefaultSSHConnectTimeoutMS = 10000
+	// DefaultSSHAuthFailureCooldownS is how long a login whose password was refused is not tried again.
+	DefaultSSHAuthFailureCooldownS = 600
 )
 
 // Upper bounds on the limits, so a typo cannot turn the probe into a load generator.
 const (
 	maxMaxConcurrent   = 64
 	maxPerTargetPerMin = 600
+
+	minSSHMaxOutputBytes   = 4096
+	maxSSHMaxOutputBytes   = 4194304
+	minSSHConnectTimeoutMS = 1000
+	maxSSHConnectTimeoutMS = 30000
+	maxSSHAuthCooldownS    = 86400
 )
 
 // Config is the probe's configuration file, after environment overrides.
@@ -46,6 +63,7 @@ type Config struct {
 	Targets           policy.Config `yaml:"targets"`
 	ListenPorts       string        `yaml:"listen_ports"`
 	Limits            Limits        `yaml:"limits"`
+	SSH               SSHConfig     `yaml:"ssh"`
 	LogLevel          string        `yaml:"log_level"`
 
 	// Set by Validate from ListenPorts; both zero when listening is off.
@@ -59,6 +77,33 @@ type Limits struct {
 	// PerTargetPerMinute is how many jobs may contact one address per minute. The policy counts it on resolved
 	// addresses, once per job, so other spellings of a target share its limit.
 	PerTargetPerMinute int `yaml:"per_target_per_minute"`
+}
+
+// SSHConfig turns on device_show and device_commands. Credentials are not here: they are in the SSH store under
+// state_dir, entered with `probe ssh ...`.
+type SSHConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// CommandsFile is a local file of additions to and removals from the built-in command lists; empty uses the
+	// built-in lists only. A file that does not load stops the probe.
+	CommandsFile string `yaml:"commands_file"`
+	// MaxOutputBytes is how much of a command's output is read, 4096 to 4194304.
+	MaxOutputBytes int `yaml:"max_output_bytes"`
+	// ConnectTimeoutMS bounds each TCP connection (to the device or the jump host), 1000 to 30000.
+	ConnectTimeoutMS int `yaml:"connect_timeout_ms"`
+	// AuthFailureCooldownS is how long, after a login whose password was sent and refused, device_show answers
+	// auth_failed without connecting: for the profile at that device address, for a jump host everywhere, and for
+	// the profile everywhere once its password failed at 3 addresses within this time (devssh.Config). So repeated
+	// calls cannot lock the account. 0 to 86400; 0 turns it off; unset is DefaultSSHAuthFailureCooldownS. A pointer,
+	// so an explicit 0 differs from unset.
+	AuthFailureCooldownS *int `yaml:"auth_failure_cooldown_s"`
+}
+
+// AuthFailureCooldown is AuthFailureCooldownS as a duration (after ParseConfig has filled the default).
+func (s SSHConfig) AuthFailureCooldown() time.Duration {
+	if s.AuthFailureCooldownS == nil {
+		return DefaultSSHAuthFailureCooldownS * time.Second
+	}
+	return time.Duration(*s.AuthFailureCooldownS) * time.Second
 }
 
 // ConfigPath picks the configuration file: the --config flag, else PROBE_CONFIG, else the default path.
@@ -121,6 +166,16 @@ func ParseConfig(data []byte, getenv func(string) string) (Config, error) {
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
 	}
+	if cfg.SSH.MaxOutputBytes == 0 {
+		cfg.SSH.MaxOutputBytes = DefaultSSHMaxOutputBytes
+	}
+	if cfg.SSH.ConnectTimeoutMS == 0 {
+		cfg.SSH.ConnectTimeoutMS = DefaultSSHConnectTimeoutMS
+	}
+	if cfg.SSH.AuthFailureCooldownS == nil {
+		v := DefaultSSHAuthFailureCooldownS
+		cfg.SSH.AuthFailureCooldownS = &v
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -162,6 +217,23 @@ func (c *Config) Validate() error {
 	}
 	if _, err := ParseLogLevel(c.LogLevel); err != nil {
 		errs = append(errs, err)
+	}
+	if c.SSH.MaxOutputBytes != 0 && c.SSH.MaxOutputBytes < minSSHMaxOutputBytes || c.SSH.MaxOutputBytes > maxSSHMaxOutputBytes {
+		errs = append(errs, fmt.Errorf("ssh.max_output_bytes must be %d to %d, got %d", minSSHMaxOutputBytes, maxSSHMaxOutputBytes, c.SSH.MaxOutputBytes))
+	}
+	if c.SSH.ConnectTimeoutMS != 0 && c.SSH.ConnectTimeoutMS < minSSHConnectTimeoutMS || c.SSH.ConnectTimeoutMS > maxSSHConnectTimeoutMS {
+		errs = append(errs, fmt.Errorf("ssh.connect_timeout_ms must be %d to %d, got %d", minSSHConnectTimeoutMS, maxSSHConnectTimeoutMS, c.SSH.ConnectTimeoutMS))
+	}
+	if v := c.SSH.AuthFailureCooldownS; v != nil && (*v < 0 || *v > maxSSHAuthCooldownS) {
+		errs = append(errs, fmt.Errorf("ssh.auth_failure_cooldown_s must be 0 (off) to %d, got %d", maxSSHAuthCooldownS, *v))
+	}
+	if c.SSH.Enabled {
+		if err := sshPlatformError(); err != nil {
+			errs = append(errs, fmt.Errorf("ssh.enabled: %w", err))
+		}
+		if _, err := devcmd.Load(c.SSH.CommandsFile); err != nil {
+			errs = append(errs, fmt.Errorf("ssh.commands_file: %w", err))
+		}
 	}
 	return errors.Join(errs...)
 }

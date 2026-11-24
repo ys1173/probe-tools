@@ -179,6 +179,7 @@ func (h *Hub) status(r ProbeRecord) hubapi.ProbeStatus {
 		st.Capabilities = hello.Capabilities
 		st.Policy = hello.Policy
 		st.ListenPorts = hello.ListenPorts
+		st.SSH = hello.SSH
 	}
 	return st
 }

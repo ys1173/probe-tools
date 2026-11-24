@@ -23,6 +23,10 @@ func TestNormalizeIdempotent(t *testing.T) {
 		in   normalizer
 	}{
 		{"probe_info", &ProbeInfoParams{}},
+		{"device_show defaults", &DeviceShowParams{Device: "10.0.0.1", Command: "show interfaces"}},
+		{"device_show spacing", &DeviceShowParams{Device: "sw1.example", Command: "  show   ip  route\t10.0.0.0 ", TimeoutMS: 99999}},
+		{"device_commands all", &DeviceCommandsParams{}},
+		{"device_commands one", &DeviceCommandsParams{Platform: " IOS "}},
 		{"ping defaults", &PingParams{Target: "host.example"}},
 		{"ping clamped", &PingParams{Target: "10.0.0.1", Count: 99, IntervalMS: 1, TimeoutMS: 99999, Size: 1472, Family: "4"}},
 		{"ping negative", &PingParams{Target: "10.0.0.1", Count: -3, IntervalMS: -1}},
@@ -179,5 +183,40 @@ func TestUntrustedTextEscapesInvisible(t *testing.T) {
 	u := UntrustedString(strings.Repeat("\u200b", 10), 13)
 	if u.Text != `\u200b\u200b` || !u.Truncated {
 		t.Fatalf("truncation: %+v", u)
+	}
+}
+
+func TestTargetsAndDevicesRefuseOddCharacters(t *testing.T) {
+	inj := "fd00:1::5%z\tssh-ed25519\tAAAA\n10.0.0.1\tssh-ed25519\tAAAA\tx"
+	for _, d := range []string{"fd00:1::5%x", "fe80::1%eth0", inj, "10.0.0.1 x", "a,b", "[2001:db8::1]", "a\x00b", "*.example", "",
+		strings.Repeat("a", 254)} {
+		p := DeviceShowParams{Device: d, Command: "show version"}
+		if err := p.Normalize(); err == nil || err.Code != CodeInvalidParams {
+			t.Errorf("device %q: %v", d, err)
+		}
+		q := PingParams{Target: d}
+		if d != "[2001:db8::1]" {
+			if err := q.Normalize(); err == nil || err.Code != CodeInvalidParams {
+				t.Errorf("ping target %q: %v", d, err)
+			}
+		}
+	}
+	for _, d := range []string{"10.0.0.1", "2001:db8::1", "::ffff:10.0.0.1", "sw1.example.net", "core_sw-1", " 10.0.0.1 "} {
+		p := DeviceShowParams{Device: d, Command: "show version"}
+		if err := p.Normalize(); err != nil {
+			t.Errorf("device %q: %v", d, err)
+		}
+	}
+	for _, d := range []string{"[2001:db8::1]", "2001:db8::1", "host.example"} {
+		q := PingParams{Target: d}
+		if err := q.Normalize(); err != nil {
+			t.Errorf("ping target %q: %v", d, err)
+		}
+	}
+	for _, d := range []string{"[2001:db8::1", "2001:db8::1]", "[]"} {
+		q := PingParams{Target: d}
+		if err := q.Normalize(); err == nil {
+			t.Errorf("ping target %q accepted", d)
+		}
 	}
 }

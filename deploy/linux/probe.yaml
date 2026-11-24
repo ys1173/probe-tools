@@ -25,6 +25,11 @@ targets:
   allow_hosts:
     - "*.corp.example"
   deny_cidrs: []
+  # Names no check may reach by that name (exact, or "*.example.com"). It matches requests made by name only: list
+  # the addresses in deny_cidrs too to refuse them however they are asked for.
+  deny_hosts: []
+  #deny_hosts:
+  #  - "*.payments.corp.example"
 
 # Ports this probe may open for path_test listeners. They are opened on this host, so
 # allow them in the host firewall.
@@ -33,5 +38,24 @@ listen_ports: "40000-40100"
 limits:
   max_concurrent: 4
   per_target_per_minute: 30
+
+# Device commands over SSH (device_show, device_commands). Off by default. When on, the probe logs in to network
+# devices with the profiles kept in <state_dir>/ssh/ and runs one allowed read-only command per request. Profiles,
+# jump hosts and their secrets are never in this file: enter them on this host, as the probe user that owns the store
+# (this file is root:probe 0640, so that user can read it; plain sudo, as root, is refused), with
+#   sudo -u probe probe ssh profile add --name core --cidr 10.1.0.0/16 --platform ios --username netops --auth password
+#   sudo -u probe probe ssh hostkey learn 10.1.0.1 10.1.0.2   # a password profile logs in only to devices whose key is recorded
+#   sudo -u probe probe ssh jump add ...    sudo -u probe probe ssh profile list
+#   sudo -u probe probe ssh test --device 10.1.0.1 --command "show version"
+# A --key-file must be readable by user probe: e.g. sudo install -m 0400 -o probe KEY /var/lib/probe/import.key, add
+# the profile with --key-file /var/lib/probe/import.key (it is copied into the store), then sudo rm that file.
+# Devices are reached through the target policy above, so a device must be allowed there, and deny_cidrs / deny_hosts
+# keep it away.
+#ssh:
+#  enabled: true
+#  commands_file: /etc/probe/commands.yaml   # optional local additions to / removals from the built-in command lists (root:probe 0640)
+#  max_output_bytes: 262144                  # 4096 to 4194304; output beyond what fits in one result is cut
+#  connect_timeout_ms: 10000
+#  auth_failure_cooldown_s: 600              # after a refused password, that device (or jump host) is not tried again for this long (0: off)
 
 log_level: info

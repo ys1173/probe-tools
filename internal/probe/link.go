@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -25,6 +27,7 @@ import (
 	"probetools/internal/check"
 	"probetools/internal/policy"
 	"probetools/internal/protocol"
+	"probetools/internal/sshcfg"
 )
 
 // Close codes on the probe link, from DESIGN.md.
@@ -132,8 +135,9 @@ func newHubClient(cfg Config) (*http.Client, error) {
 	}, nil
 }
 
-// buildHello describes this probe to the hub. Addresses are read afresh for each session, since interfaces change.
-func buildHello(cfg Config, reg *check.Registry, caps map[string]bool, pol *policy.Policy) protocol.Hello {
+// buildHello describes this probe to the hub. Addresses are read afresh for each session, since interfaces change, and
+// so are the SSH profile summaries when ssh is non-nil (device access is enabled).
+func buildHello(cfg Config, reg *check.Registry, caps map[string]bool, pol *policy.Policy, ssh *sshcfg.Store) protocol.Hello {
 	hostname, _ := os.Hostname()
 	var addrs []string
 	for _, a := range policy.InterfaceAddrs() {
@@ -143,7 +147,7 @@ func buildHello(cfg Config, reg *check.Registry, caps map[string]bool, pol *poli
 		}
 		addrs = append(addrs, a.String())
 	}
-	return boundHello(protocol.Hello{
+	h := protocol.Hello{
 		Type:         protocol.TypeHello,
 		Version:      Version,
 		OS:           runtime.GOOS,
@@ -154,7 +158,20 @@ func buildHello(cfg Config, reg *check.Registry, caps map[string]bool, pol *poli
 		Capabilities: caps,
 		Policy:       pol.Summary(),
 		ListenPorts:  listenPortsString(cfg),
-	})
+	}
+	if ssh != nil {
+		h.Capabilities = maps.Clone(caps)
+		if h.Capabilities == nil {
+			h.Capabilities = map[string]bool{}
+		}
+		h.Capabilities["ssh"] = true
+		h.SSH = &protocol.SSHSummary{Profiles: []protocol.SSHProfileSummary{}}
+		// A store that cannot be read reports no profiles; device_show then answers why, per request.
+		if c, err := ssh.Load(); err == nil {
+			h.SSH.Profiles = c.Summaries()
+		}
+	}
+	return boundHello(h)
 }
 
 // Limits the hub enforces on a hello. A hello outside them is refused with close code 4400, and the probe would retry
@@ -167,6 +184,9 @@ const (
 	// maxHelloPolicy caps each policy list in the hello. The lists are only a summary shown to agents; the probe
 	// enforces its whole policy whatever it reports.
 	maxHelloPolicy = 256
+	// SSH profile summaries, as the hub's validateSSH accepts them.
+	maxHelloSSHProfiles = 64
+	maxHelloSSHNets     = 16
 )
 
 // boundHello makes h acceptable to the hub: text fields reduced to [A-Za-z0-9._+~:-] (other characters become '-') and
@@ -218,7 +238,38 @@ func boundHello(h protocol.Hello) protocol.Hello {
 		}
 	}
 	h.Policy.AllowHosts = hosts
+	var deny []string
+	for _, n := range h.Policy.DenyHosts {
+		if len(deny) < maxHelloPolicy && validPolicyHost(n) {
+			deny = append(deny, n)
+		}
+	}
+	h.Policy.DenyHosts = deny
+	if h.SSH != nil {
+		h.SSH = boundSSH(*h.SSH)
+	}
 	return h
+}
+
+// boundSSH keeps the profile summaries the hub accepts: names of [a-z0-9-]{1,32}, a known platform, at most
+// maxHelloSSHNets CIDRs each and maxHelloSSHProfiles profiles. The store enforces the same, so this only matters for a
+// store edited by hand.
+func boundSSH(in protocol.SSHSummary) *protocol.SSHSummary {
+	out := &protocol.SSHSummary{Profiles: []protocol.SSHProfileSummary{}}
+	for _, p := range in.Profiles {
+		if len(out.Profiles) == maxHelloSSHProfiles {
+			break
+		}
+		if !sshcfg.ValidName(p.Name) || !slices.Contains(protocol.Platforms, p.Platform) || (p.Jump != "" && !sshcfg.ValidName(p.Jump)) {
+			continue
+		}
+		cidrs := helloCIDRs(p.CIDRs)
+		if len(cidrs) > maxHelloSSHNets {
+			cidrs = cidrs[:maxHelloSSHNets]
+		}
+		out.Profiles = append(out.Profiles, protocol.SSHProfileSummary{Name: p.Name, CIDRs: cidrs, Platform: p.Platform, Jump: p.Jump})
+	}
+	return out
 }
 
 // helloCIDRs keeps the entries the hub accepts (an address or CIDR without a zone), up to maxHelloPolicy.

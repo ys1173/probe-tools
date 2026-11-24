@@ -10,6 +10,7 @@ import (
 	"probetools/internal/check"
 	"probetools/internal/policy"
 	"probetools/internal/protocol"
+	"probetools/internal/sshcfg"
 )
 
 // Version is the probe's version, set at build time with -ldflags "-X probetools/internal/probe.Version=...".
@@ -58,7 +59,7 @@ func run(ctx context.Context, cfg Config, reg *check.Registry, caps map[string]b
 		return err
 	}
 	logger.Info("probe starting", "version", Version, "hub_url", cfg.HubURL, "policy_mode", pol.Summary().Mode,
-		"listen_ports", cfg.ListenPorts, "checks", reg.Names())
+		"listen_ports", cfg.ListenPorts, "checks", reg.Names(), "ssh", cfg.SSH.Enabled)
 	id, err := loadOrEnroll(ctx, cfg, client, logger, opts.getenv, opts.timers)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -78,6 +79,12 @@ func run(ctx context.Context, cfg Config, reg *check.Registry, caps map[string]b
 	if env.Capabilities == nil {
 		env.Capabilities = map[string]bool{}
 	}
+	// The SSH profile summaries are read afresh for each hello, so a profile added with `probe ssh profile add` is
+	// reported at the next connection.
+	var sshStore *sshcfg.Store
+	if cfg.SSH.Enabled {
+		sshStore = sshcfg.New(cfg.StateDir)
+	}
 	disp := newDispatcher(reg, env, cfg.Limits, logger, opts.timers.now)
 	l := &link{
 		hubURL:    cfg.HubURL,
@@ -86,7 +93,7 @@ func run(ctx context.Context, cfg Config, reg *check.Registry, caps map[string]b
 		client:    client,
 		logger:    logger,
 		disp:      disp,
-		hello:     func() protocol.Hello { return buildHello(cfg, reg, caps, pol) },
+		hello:     func() protocol.Hello { return buildHello(cfg, reg, caps, pol, sshStore) },
 		t:         opts.timers,
 		welcomeTO: orDefault(opts.welcomeTimeout, welcomeTimeout),
 		idleTO:    orDefault(opts.idleTimeout, idleTimeout),

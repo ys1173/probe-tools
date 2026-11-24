@@ -1,0 +1,63 @@
+# Palo Alto Networks PAN-OS: interface, routing, session and system status only.
+# Left out on purpose: show config (running, candidate, pushed), show admins, show user, certificates and keys, show
+# log, show system state (can dump configuration), show session all and show session id (per-flow user data), show
+# counter global filter delta (moves a baseline), show system resources follow (streams), anything not confirmed in
+# the docs: show routing route with arguments, show routing protocol ospf neighbor, show lldp neighbors, show
+# high-availability link-monitoring and path-monitoring.
+# Placeholders (<IF>, <V4>, ...) are defined in builtin.go.
+# DEV = PAN-OS CLI Quick Start, CLI Cheat Sheet: Device Management
+#   (docs.paloaltonetworks.com/ngfw/pan-os-cli-quick-start/cli-cheat-sheet-device-management)
+# NET = PAN-OS CLI Quick Start, CLI Cheat Sheet: Networking
+#   (docs.paloaltonetworks.com/ngfw/pan-os-cli-quick-start/cli-cheat-sheet-networking)
+# TM = PAN-OS Device Telemetry Metrics Reference, "Equivalent CLI Command" of each metric
+#   (docs.paloaltonetworks.com/content/techdocs/en_US/pan-os/u-v/pan-os-device-telemetry-metrics-reference/)
+# KB = knowledgebase.paloaltonetworks.com
+groups:
+  - source: DEV (show system info, show system resources, show system software status, show session info, show
+      running resource-monitor); TM (show system environmentals, show clock, show ntp, show session meter)
+    allow:
+      - '^show system info$'
+      - '^show system resources$'
+      - '^show system environmentals$'
+      - '^show system software status$'
+      - '^show clock$'
+      - '^show ntp$'
+      - '^show session info$'
+      - '^show session meter$'
+      - '^show running resource-monitor$'
+
+  - source: TM (show interface all, show interface management, show counter interface); Monitor Layer 2 Switch
+      Interfaces (show interface <name>; docs.paloaltonetworks.com/ngfw/networking/configure-interfaces/layer2-switch-interfaces/monitor-layer2-switch-interfaces)
+    allow:
+      - '^show interface (?:all|management|<IF>)$'
+      - '^show counter interface (?:all|<IF>)$'
+      - '^show counter global$'
+
+  - source: NET (show routing route, show routing fib, show advanced-routing route, fib, bgp, ospf); TM (show
+      routing summary, show routing resource, show routing protocol bgp summary and peer, show routing protocol ospf
+      summary)
+    allow:
+      - '^show routing route$'
+      - '^show routing (?:summary|fib|resource)$'
+      - '^show routing protocol bgp (?:summary|peer)$'
+      - '^show routing protocol ospf summary$'
+      - '^show advanced-routing route(?: afi (?:ipv4|ipv6|both))?(?: destination <PFX>)?(?: logical-router <NAME>)?(?: type (?:bgp|connect|ospf|ospfv3|static))?$'
+      - '^show advanced-routing fib(?: afi (?:ipv4|ipv6|both))?$'
+      - '^show advanced-routing resource$'
+      - '^show advanced-routing bgp summary(?: logical-router <NAME>)?$'
+      - '^show advanced-routing bgp peer (?:status|detail)(?: peer-name <NAME>)?(?: logical-router <NAME>)?$'
+      - '^show advanced-routing (?:ospf|ospfv3) (?:neighbor|interface|area|summary)$'
+
+  - source: TM (show arp all, show mac all, show neighbor interface all, show lacp aggregate-ethernet all); NET (show
+      vlan all)
+    allow:
+      - '^show arp all$'
+      - '^show mac all$'
+      - '^show neighbor interface all$'
+      - '^show vlan all$'
+      - '^show lacp aggregate-ethernet all$'
+
+  - source: TM (show high-availability all); KB kA10g000000ClhK (show high-availability state); KB
+      kA10g000000ClXG (show high-availability state-synchronization)
+    allow:
+      - '^show high-availability (?:all|state|state-synchronization)$'

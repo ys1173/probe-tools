@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 
 	"probetools/internal/protocol"
@@ -16,8 +17,10 @@ const (
 	maxHelloAddresses = 32
 	maxHelloChecks    = 64
 	maxHelloCaps      = 32
-	maxPolicyEntries  = 256 // each of allow_cidrs, allow_hosts, deny_cidrs
+	maxPolicyEntries  = 256 // each of allow_cidrs, allow_hosts, deny_cidrs, deny_hosts
 	maxPolicyHost     = 253
+	maxSSHProfiles    = 64
+	maxSSHProfileNets = 16 // CIDRs per SSH profile
 )
 
 var (
@@ -27,6 +30,8 @@ var (
 	capName       = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
 	policyHost    = regexp.MustCompile(`^[A-Za-z0-9.*_-]+$`)
 	listenPortsRE = regexp.MustCompile(`^\d{1,5}(-\d{1,5})?$`)
+	// sshName is a profile or jump host name as the probe's SSH store writes it.
+	sshName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 )
 
 // validateHello checks a hello and returns the copy the hub keeps. Addresses and CIDRs are re-written from their parsed
@@ -86,18 +91,65 @@ func validateHello(in protocol.Hello) (protocol.Hello, error) {
 	if out.Policy.DenyCIDRs, err = canonicalCIDRs("policy.deny_cidrs", in.Policy.DenyCIDRs); err != nil {
 		return protocol.Hello{}, err
 	}
-	if len(in.Policy.AllowHosts) > maxPolicyEntries {
-		return protocol.Hello{}, fmt.Errorf("policy.allow_hosts has more than %d entries", maxPolicyEntries)
+	if out.Policy.AllowHosts, err = checkPolicyHosts("policy.allow_hosts", in.Policy.AllowHosts); err != nil {
+		return protocol.Hello{}, err
 	}
-	for i, h := range in.Policy.AllowHosts {
-		if len(h) > maxPolicyHost || !policyHost.MatchString(h) {
-			return protocol.Hello{}, fmt.Errorf("policy.allow_hosts[%d] is not a host name or *.name", i)
+	if out.Policy.DenyHosts, err = checkPolicyHosts("policy.deny_hosts", in.Policy.DenyHosts); err != nil {
+		return protocol.Hello{}, err
+	}
+
+	// The ssh section is optional: a probe without device access, or from before it existed, leaves it out.
+	if in.SSH != nil {
+		if out.SSH, err = validateSSH(*in.SSH); err != nil {
+			return protocol.Hello{}, err
 		}
 	}
-	out.Policy.AllowHosts = in.Policy.AllowHosts
 
 	if in.ListenPorts != "" && !listenPortsRE.MatchString(in.ListenPorts) {
 		return protocol.Hello{}, fmt.Errorf("listen_ports is not a port or port range")
+	}
+	return out, nil
+}
+
+// checkPolicyHosts accepts what a probe's policy takes as host patterns: names, or *.name.
+func checkPolicyHosts(field string, list []string) ([]string, error) {
+	if len(list) > maxPolicyEntries {
+		return nil, fmt.Errorf("%s has more than %d entries", field, maxPolicyEntries)
+	}
+	for i, h := range list {
+		if len(h) > maxPolicyHost || !policyHost.MatchString(h) {
+			return nil, fmt.Errorf("%s[%d] is not a host name or *.name", field, i)
+		}
+	}
+	return list, nil
+}
+
+// validateSSH checks the summary of a probe's SSH profiles and returns the copy the hub keeps. It is shown to agents
+// beside the probe, so names and platforms are held to the shapes the probe's own store produces.
+func validateSSH(in protocol.SSHSummary) (*protocol.SSHSummary, error) {
+	if len(in.Profiles) > maxSSHProfiles {
+		return nil, fmt.Errorf("ssh.profiles has more than %d entries", maxSSHProfiles)
+	}
+	out := &protocol.SSHSummary{Profiles: make([]protocol.SSHProfileSummary, 0, len(in.Profiles))}
+	for i, p := range in.Profiles {
+		field := fmt.Sprintf("ssh.profiles[%d]", i)
+		if !sshName.MatchString(p.Name) {
+			return nil, fmt.Errorf("%s.name is not of the form [a-z0-9-]{1,32}", field)
+		}
+		if !slices.Contains(protocol.Platforms, p.Platform) {
+			return nil, fmt.Errorf("%s.platform is not a supported platform", field)
+		}
+		if p.Jump != "" && !sshName.MatchString(p.Jump) {
+			return nil, fmt.Errorf("%s.jump is not of the form [a-z0-9-]{1,32}", field)
+		}
+		if len(p.CIDRs) > maxSSHProfileNets {
+			return nil, fmt.Errorf("%s.cidrs has more than %d entries", field, maxSSHProfileNets)
+		}
+		cidrs, err := canonicalCIDRsMax(field+".cidrs", p.CIDRs, maxSSHProfileNets)
+		if err != nil {
+			return nil, err
+		}
+		out.Profiles = append(out.Profiles, protocol.SSHProfileSummary{Name: p.Name, CIDRs: cidrs, Platform: p.Platform, Jump: p.Jump})
 	}
 	return out, nil
 }
@@ -121,8 +173,12 @@ func canonicalAddr(s string) (string, bool) {
 
 // canonicalCIDRs accepts what the probe's policy accepts in its config: CIDRs or bare addresses, with spaces around.
 func canonicalCIDRs(field string, list []string) ([]string, error) {
-	if len(list) > maxPolicyEntries {
-		return nil, fmt.Errorf("%s has more than %d entries", field, maxPolicyEntries)
+	return canonicalCIDRsMax(field, list, maxPolicyEntries)
+}
+
+func canonicalCIDRsMax(field string, list []string, max int) ([]string, error) {
+	if len(list) > max {
+		return nil, fmt.Errorf("%s has more than %d entries", field, max)
 	}
 	var out []string
 	for i, c := range list {

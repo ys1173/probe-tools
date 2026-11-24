@@ -1,0 +1,97 @@
+# Cisco IOS and IOS-XE: physical and operational state only.
+# Left out on purpose: running/startup configuration, archive, crypto keys and certificates, users and sessions, SNMP,
+# AAA, logging, file systems, tech-support, show vrrp without brief (its detail can show text authentication strings),
+# show standby without brief, show platform (some releases have a tech-support keyword under it).
+# Placeholders (<IF>, <V4>, ...) are defined in builtin.go.
+groups:
+  - source: >-
+      Catalyst 9300 Command Reference, IOS XE 17.18, System Management and Interface and Hardware Components
+      (cisco.com/c/en/us/td/docs/switches/lan/catalyst9300/software/release/17-18/command_reference/b_1718_9300_cr/);
+      Cisco IOS Basic System Management (bsm-cr-book) and Configuration Fundamentals (cf_s3) command references
+    allow:
+      - '^show version(?: running)?$'
+      - '^show clock(?: detail)?$'
+      - '^show inventory(?: fru| oid| raw)?$'
+      - '^show environment(?: all| fan| power| stack| temperature| xps)?$'
+      - '^show module(?: <NUM>)?$'
+      - '^show processes cpu(?: sorted(?: 1min| 5min| 5sec)?| history)?$'
+      - '^show processes memory(?: sorted(?: allocated| getbufs| holding)?)?$'
+      - '^show power inline(?: <IF>)?(?: detail)?$'
+      - '^show ntp status$'
+      - '^show ntp associations(?: detail)?$'
+
+  - source: >-
+      Catalyst 9300 Command Reference, IOS XE 17.18, Interface and Hardware Components (show interfaces, show
+      interfaces counters, show interfaces transceiver, show ip interface); Cisco IOS IPv6 Command Reference (show
+      ipv6 interface)
+    allow:
+      - '^show interfaces(?: <IF>)?$'
+      - '^show interfaces(?: <IF>)? (?:description|status(?: err-disabled| inactive)?|stats|trunk|capabilities|flowcontrol)$'
+      - '^show interfaces(?: <IF>)? counters(?: errors| etherchannel| protocol| trunk)?$'
+      - '^show interfaces(?: <IF>)? transceiver(?: detail| properties)?$'
+      - '^show ip interface(?: <IF>)?(?: brief)?$'
+      - '^show ipv6 interface(?: brief)?(?: <IF>)?$'
+
+  - source: >-
+      Cisco IOS IP Routing: Protocol-Independent Command Reference (show ip route, show ip route vrf, show ipv6 route;
+      cisco.com/en/US/docs/ios-xml/ios/iproute_pi/command/iri-cr-s1.pdf)
+    allow:
+      - '^show ip route(?: vrf <VRF>)?$'
+      - '^show ip route(?: vrf <VRF>)? (?:summary|connected|static|ospf|bgp|eigrp|isis|rip)$'
+      - '^show ip route(?: vrf <VRF>)? <V4>(?: <V4>(?: longer-prefixes)?)?$'
+      - '^show ipv6 route(?: <V6>| <V6P>(?: longer-prefixes)?| summary| connected| static| ospf| bgp| eigrp| isis)?$'
+      - '^show ipv6 route vrf <VRF>$'
+
+  - source: >-
+      Cisco IOS IP Addressing Services Command Reference (show arp, show ip arp; ipaddr-cr-book); Cisco IOS IPv6
+      Command Reference (show ipv6 neighbors; ipv6-s4)
+    allow:
+      - '^show arp(?: vrf <VRF>)?(?: <V4>| <IF>)?(?: detail)?$'
+      - '^show ip arp(?: <V4>| <MAC>| <IF>)?$'
+      - '^show ipv6 neighbors(?: <IF>| <V6>| statistics)?$'
+
+  - source: >-
+      Catalyst 9300 Command Reference, IOS XE 17.18, System Management (show mac address-table)
+    allow:
+      - '^show mac address-table(?: dynamic| static)?(?: address <MAC>)?(?: interface <IF>| vlan <VLAN>)?$'
+      - '^show mac address-table count(?: summary| vlan <VLAN>)?$'
+
+  - source: >-
+      Cisco IOS Carrier Ethernet Command Reference (show lldp; ce-cr-book); Cisco IOS CDP Command Reference (show cdp
+      neighbors; cdp-cr-book)
+    allow:
+      - '^show lldp neighbors(?: <IF>)?(?: detail)?$'
+      - '^show cdp neighbors(?: <IF>)?(?: detail)?$'
+
+  - source: >-
+      Catalyst 9300 Command Reference, IOS XE 17.18, Routing (show ip ospf neighbor, show ip ospf interface, show ip
+      eigrp neighbors, show ip bgp neighbors); Cisco IOS OSPF, BGP, EIGRP and IS-IS command references
+      (iro-cr-book, irg-cr-book, ire-cr-book, irs-cr-book); IPv6 Command Reference (show ipv6 ospf neighbor); ISO
+      CLNS Command Reference (show clns neighbors)
+    allow:
+      - '^show ip ospf neighbor(?: <IF>)?(?: <V4>)?(?: detail)?$'
+      - '^show ip ospf neighbor summary$'
+      - '^show ip ospf interface(?: <IF>)?(?: brief)?$'
+      - '^show ipv6 ospf neighbor(?: <IF>)?(?: detail)?$'
+      - '^show ip bgp(?: ipv4 (?:unicast|multicast)| vpnv4 all| vpnv6 unicast all| vpnv4 vrf <VRF>)? summary$'
+      - '^show ip bgp(?: ipv4 unicast| vpnv4 all)? neighbors(?: <V4>| <V6>)?$'
+      - '^show ip bgp(?: ipv4 unicast| vpnv4 all)? neighbors (?:<V4>|<V6>) (?:advertised-routes|received-routes|routes)$'
+      - '^show ip eigrp(?: vrf <VRF>)?(?: <NUM>)? neighbors(?: detail)?(?: <IF>)?$'
+      - '^show isis neighbors(?: detail)?$'
+      - '^show clns neighbors(?: detail)?$'
+
+  - source: >-
+      Catalyst 9300 Command Reference, IOS XE 17.18, VLAN (show vlan) and Layer 2/3 (show spanning-tree, show
+      etherchannel, show lacp)
+    allow:
+      - '^show vlan(?: brief| summary| id <VLAN>)?$'
+      - '^show spanning-tree(?: summary(?: totals)?| vlan <VLANS>| blockedports| detail| root| active| inconsistentports| interface <IF>)?$'
+      - '^show etherchannel(?: <NUM>)?(?: summary| detail| port-channel| load-balance)?$'
+      - '^show lacp(?: <NUM>)? (?:neighbor|counters|internal|sys-id)$'
+
+  - source: >-
+      Cisco IOS First Hop Redundancy Protocols Command Reference (show standby, show vrrp; fhp-cr-book). Brief forms
+      only.
+    allow:
+      - '^show standby(?: <IF>(?: <NUM>)?)? brief$'
+      - '^show vrrp(?: interface <IF>)? brief$'
